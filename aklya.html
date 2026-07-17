@@ -218,6 +218,39 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
 .chip.cardio{background:#E7EEF3;color:var(--deep-2)}
 
 /* menu de l'onglet Séance */
+/*__PROG_CSS_START__*/
+/* Progression */
+.prog-chart{padding:14px 13px}
+.prog-question{font-weight:600;font-size:.95rem;color:var(--ink);margin-bottom:10px;line-height:1.35}
+.prog-svg{margin:2px 0 10px}
+.prog-summary{font-size:.9rem;color:var(--deep-2);font-weight:600;margin-top:4px}
+.prog-note{font-size:.8rem;color:var(--graphite);font-style:italic;margin-bottom:8px}
+.prog-foot{font-size:.78rem;color:var(--graphite);text-align:center;margin-top:14px}
+.prog-text{margin-top:8px;font-size:.85rem}
+.prog-text summary{cursor:pointer;color:var(--deep-2)}
+.prog-values{margin-top:6px;display:flex;flex-direction:column;gap:2px}
+.prog-val-row{font-size:.82rem;color:var(--graphite)}
+.prog-records{display:flex;flex-direction:column;gap:3px;background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:10px 12px;margin-bottom:10px}
+.prog-rec{font-size:.86rem;color:var(--deep-2)}
+.range-row,.metric-row,.charge-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.range-btn,.metric-btn,.charge-btn{border:1px solid var(--hair);background:var(--card);border-radius:9px;padding:6px 10px;font-family:Inter;font-size:.82rem;color:var(--graphite);cursor:pointer}
+.range-btn.active,.metric-btn.active,.charge-btn.active{background:var(--deep);color:#EAF3F0;border-color:var(--deep)}
+.charge-lab{font-size:.8rem;color:var(--graphite)}
+
+/*__PROG_CSS_END__*/
+.apply-inline{background:var(--sand,#f4f1ea);border:1px solid var(--hair);border-radius:12px;padding:10px 12px;margin:8px 0 4px}
+.apply-inline .ap-msg{font-size:.88rem;color:var(--ink);margin-bottom:8px}
+.apply-inline .ap-btns{display:flex;gap:8px;flex-wrap:wrap}
+.apply-inline .ap-yes{background:var(--deep);color:#EAF3F0;border:none;border-radius:9px;padding:8px 12px;font-family:Inter;font-size:.85rem;font-weight:600;cursor:pointer}
+.apply-inline .ap-no{background:transparent;color:var(--graphite);border:1px solid var(--hair);border-radius:9px;padding:8px 12px;font-family:Inter;font-size:.85rem;cursor:pointer}
+.meas-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.meas-cell{display:flex;flex-direction:column;gap:4px}
+.meas-label{font-size:.78rem;color:var(--graphite)}
+.meas-cell .small-input{width:100%}
+.btn.wide{width:100%;margin-top:12px}
+.chip.meas{background:#e8eef2;color:#3a5566}
+.list-item.picked{border-color:var(--deep);background:#f0f5f3}
+.day-todo{font-size:.6rem;color:var(--deep-2);font-weight:600;margin-top:1px}
 .version-line{text-align:center;font-size:.75rem;color:var(--graphite);margin-top:22px;opacity:.7}
 .btn.ghost.active-choice{background:var(--deep);color:#EAF3F0;border-color:var(--deep);font-weight:600}
 .sub-actions{display:flex;justify-content:center;gap:18px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--hair)}
@@ -249,7 +282,575 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
 </head>
 <body>
 <div id="app"></div>
-<script>window.CARNET_CONFIG={"appName":"AKLYA","namespace":""};</script>
+<script>window.CARNET_CONFIG={"appName":"AKLYA","namespace":"","showProgression":true,"showPrograms":true,"versionLabel":"1.6.0"};</script>
+<script>
+/* ============================================================
+ * ProgressionEngine — moteur de progression PUR (aucun DOM)
+ * ------------------------------------------------------------
+ * Règles fondamentales (spec v1.6) :
+ *  - Sources de vérité : workoutSessions, cardioSessions, bodyMeasurements.
+ *    Le moteur NE MODIFIE JAMAIS ces données.
+ *  - Tout est recalculé à la demande. Aucun record/volume/tendance
+ *    ne devient une 2e source de vérité.
+ *  - Une valeur inconnue (null) n'est JAMAIS transformée en 0.
+ *  - Une série n'est "faite" que si reps > 0 (charge préremplie seule = ignorée).
+ *  - Les séances legacy non vérifiées sont exclues par défaut.
+ *  - percentChange seulement si la 1re valeur est connue et != 0.
+ *  - Chaque série renvoie la QUESTION à laquelle elle répond.
+ * ============================================================ */
+(function (root) {
+  'use strict';
+
+  var DAY = 86400000;
+  // Périodes = fenêtres en JOURS GLISSANTS (pas des mois calendaires exacts).
+  // Choix assumé pour la v1 : "3 mois" = 90 jours avant `now`. À revoir si l'on veut des mois calendaires.
+  var RANGES = { '1m': 30, '3m': 90, '6m': 180, '1y': 365, 'all': null };
+
+  // ---- utilitaires ------------------------------------------------
+  // Une série "faite" = reps entier strictement positif ET charge non négative (ou absente).
+  // Les valeurs aberrantes ne sont PAS transformées : elles sont ignorées des graphiques
+  // et collectables via collectAnomalies() pour être signalées à l'utilisateur.
+  function isIntPositive(n) { return typeof n === 'number' && isFinite(n) && n > 0 && Math.floor(n) === n; }
+  function chargeIsValid(c) { return c == null || (typeof c === 'number' && isFinite(c) && c >= 0); }
+  function isRealSet(s) { return !!s && isIntPositive(s.reps) && chargeIsValid(s.charge); }
+  function setAnomaly(s) {
+    if (!s) return null;
+    var reasons = [];
+    if (s.reps != null && !isIntPositive(s.reps)) reasons.push(s.reps < 0 ? 'répétitions négatives' : (Math.floor(s.reps) !== s.reps ? 'répétitions non entières' : 'répétitions nulles'));
+    if (s.charge != null && !(typeof s.charge === 'number' && isFinite(s.charge) && s.charge >= 0)) reasons.push('charge négative ou invalide');
+    return reasons.length ? reasons : null;
+  }
+  function isValidSession(s, opts) {
+    if (!s || !s.date) return false;
+    if (s.status !== 'completed') return false;                    // seules les séances terminées comptent
+    if (s.migrationInfo && s.migrationInfo.requiresReview) return false;
+    return true;
+  }
+  function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
+  function cutoff(range, now) {
+    var days = RANGES[range];
+    if (days == null) return null;                                  // 'all' -> pas de filtre
+    return (now instanceof Date ? now.getTime() : Date.now()) - days * DAY;
+  }
+  function inRange(dateISO, range, now) {
+    var c = cutoff(range, now);
+    if (c == null) return true;
+    var t = new Date(dateISO + 'T00:00:00').getTime();
+    return t >= c;                                                  // ne crée aucun point : filtre seulement
+  }
+  function byDateAsc(a, b) { return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0); }
+  function round(v, d) { var p = Math.pow(10, d || 0); return Math.round(v * p) / p; }
+
+  // résumé honnête d'une liste de points {date,value}
+  function summarize(points) {
+    var n = points.length;
+    if (!n) return { first: null, latest: null, absoluteChange: null, percentChange: null, count: 0 };
+    var first = points[0].value, latest = points[n - 1].value;
+    var abs = (first != null && latest != null) ? round(latest - first, 2) : null;
+    var pct = (first != null && first !== 0 && latest != null) ? round((latest - first) / Math.abs(first) * 100, 1) : null;
+    return { first: first, latest: latest, absoluteChange: abs, percentChange: pct, count: n };
+  }
+  function wrap(question, unit, points, extra) {
+    var out = { question: question, unit: unit, points: points, summary: summarize(points), insufficientData: points.length < 2 };
+    if (extra) for (var k in extra) out[k] = extra[k];
+    return out;
+  }
+
+  // =================================================================
+  //  CORPS
+  // =================================================================
+  var BODY_META = {
+    weightKg:          { unit: 'kg', label: 'Poids' },
+    abdomenAtNavelCm:  { unit: 'cm', label: 'Ventre au nombril', compat: 'waistCm' },
+    waistAnatomicalCm: { unit: 'cm', label: 'Taille anatomique' },
+    chestCm:           { unit: 'cm', label: 'Poitrine' },
+    shouldersCm:       { unit: 'cm', label: 'Épaules' },
+    hipsCm:            { unit: 'cm', label: 'Hanches' },
+    neckCm:            { unit: 'cm', label: 'Cou' },
+    relaxedArmRightCm: { unit: 'cm', label: 'Bras droit (relâché)' },
+    relaxedArmLeftCm:  { unit: 'cm', label: 'Bras gauche (relâché)' },
+    forearmRightCm:    { unit: 'cm', label: 'Avant-bras droit' },
+    forearmLeftCm:     { unit: 'cm', label: 'Avant-bras gauche' },
+    thighRightCm:      { unit: 'cm', label: 'Cuisse droite' },
+    thighLeftCm:       { unit: 'cm', label: 'Cuisse gauche' },
+    calfRightCm:       { unit: 'cm', label: 'Mollet droit' },
+    calfLeftCm:        { unit: 'cm', label: 'Mollet gauche' },
+    bodyFatPercent:    { unit: '%', label: 'Masse grasse estimée', estimated: true },
+    muscleMassKg:      { unit: 'kg', label: 'Masse musculaire estimée', estimated: true },
+    bodyWaterPercent:  { unit: '%', label: 'Eau corporelle estimée', estimated: true },
+    visceralFatRating: { unit: '', label: 'Graisse viscérale estimée', estimated: true }
+  };
+
+  function readBodyValue(m, metric) {
+    var v = m.values ? m.values[metric] : undefined;
+    v = num(v);
+    // compat : ancien waistCm lu comme ventre au nombril, sans réécrire la donnée
+    if (v == null && BODY_META[metric] && BODY_META[metric].compat) {
+      v = num(m.values ? m.values[BODY_META[metric].compat] : undefined);
+    }
+    return v;
+  }
+
+  // bodySeries : une mensuration = un graphique = une question
+  function bodySeries(args) {
+    var meas = args.measurements || [];
+    var metric = args.metric;
+    var meta = BODY_META[metric] || { unit: '', label: metric };
+    // ne garde que les mesures ayant une valeur connue pour cette mensuration
+    var rows = [];
+    meas.forEach(function (m) {
+      if (!m || !m.date) return;
+      var v = readBodyValue(m, metric);
+      if (v == null) return;                                        // inconnu -> pas de point (jamais 0)
+      if (!inRange(m.date, args.range || 'all', args.now)) return;
+      rows.push({ date: m.date, value: v, measurementId: m.id, note: (m.note || null), createdAt: m.createdAt || m.date });
+    });
+    // deux mesures le même jour : garder la plus récente pour la courbe
+    var byDay = {};
+    rows.forEach(function (r) { var k = r.date; if (!byDay[k] || (r.createdAt > byDay[k].createdAt)) byDay[k] = r; });
+    var points = Object.keys(byDay).map(function (k) { return byDay[k]; }).sort(byDateAsc);
+    var question = 'Est-ce que « ' + meta.label + ' » évolue ?';
+    return wrap(question, meta.unit, points, { metric: metric, label: meta.label, estimated: !!meta.estimated });
+  }
+
+  // =================================================================
+  //  MUSCULATION (par exercice, rattaché à l'UUID)
+  // =================================================================
+  function entriesForExercise(session, exerciseId) {
+    return (session.entries || []).filter(function (en) { return en.exerciseId === exerciseId; });
+  }
+
+  // maxLoad : charge max réellement utilisée (>=1 rép), + meilleures reps à cette charge
+  function exerciseMaxLoad(exerciseId, sessions, range, now) {
+    var points = [];
+    sessions.filter(isValidSession).forEach(function (s) {
+      if (!inRange(s.date, range || 'all', now)) return;
+      var maxL = null, bestRepsAtMax = null;
+      entriesForExercise(s, exerciseId).forEach(function (en) {
+        (en.sets || []).filter(isRealSet).forEach(function (st) {
+          var c = num(st.charge); if (c == null) return;
+          if (maxL == null || c > maxL) { maxL = c; bestRepsAtMax = st.reps; }
+          else if (c === maxL && st.reps > bestRepsAtMax) { bestRepsAtMax = st.reps; }
+        });
+      });
+      if (maxL != null) points.push({ date: s.date, value: maxL, reps: bestRepsAtMax, sourceSessionId: s.id });
+    });
+    points.sort(byDateAsc);
+    return wrap('Est-ce que la charge maximale réellement utilisée (≥ 1 répétition) progresse ?', 'kg', points);
+  }
+
+  // repsAtCharge : à charge STRICTEMENT identique, meilleures reps par séance
+  function exerciseRepsAtCharge(exerciseId, sessions, charge, range, now) {
+    var target = num(charge);
+    var points = [];
+    sessions.filter(isValidSession).forEach(function (s) {
+      if (!inRange(s.date, range || 'all', now)) return;
+      var best = null;
+      entriesForExercise(s, exerciseId).forEach(function (en) {
+        (en.sets || []).filter(isRealSet).forEach(function (st) {
+          if (num(st.charge) === target) { if (best == null || st.reps > best) best = st.reps; }
+        });
+      });
+      if (best != null) points.push({ date: s.date, value: best, sourceSessionId: s.id });
+    });
+    points.sort(byDateAsc);
+    return wrap('À ' + target + ' kg, est-ce que je fais plus de répétitions ?', 'répétitions', points, { charge: target });
+  }
+
+  // volume : somme(charge × reps) par séance ; jamais 0 si l'exercice n'a pas de charge
+  function exerciseVolume(exerciseId, sessions, range, now) {
+    var points = [], anyCharged = false;
+    sessions.filter(isValidSession).forEach(function (s) {
+      if (!inRange(s.date, range || 'all', now)) return;
+      var vol = 0, hasCharged = false;
+      entriesForExercise(s, exerciseId).forEach(function (en) {
+        (en.sets || []).filter(isRealSet).forEach(function (st) {
+          var c = num(st.charge); if (c == null) return;
+          vol += c * st.reps; hasCharged = true; anyCharged = true;
+        });
+      });
+      if (hasCharged) points.push({ date: s.date, value: round(vol, 1), sourceSessionId: s.id });
+    });
+    points.sort(byDateAsc);
+    if (!anyCharged) {
+      return { question: 'Est-ce que la quantité totale de travail augmente ?', unit: 'kg', points: [],
+               summary: summarize([]), insufficientData: true,
+               notApplicable: true, notApplicableReason: 'Volume en kg non calculable pour cet exercice (aucune charge enregistrée).' };
+    }
+    return wrap('Est-ce que la quantité totale de travail augmente ?', 'kg', points);
+  }
+
+  // records dérivés (jamais stockés) pour un exercice
+  function exerciseRecords(exerciseId, sessions) {
+    var maxCharge = null, maxChargeReps = null, maxChargeDate = null;
+    var maxReps = null, maxRepsCharge = null, maxRepsDate = null;
+    var bestVol = null, bestVolDate = null;
+    sessions.filter(isValidSession).forEach(function (s) {
+      var vol = 0, hasCharged = false;
+      entriesForExercise(s, exerciseId).forEach(function (en) {
+        (en.sets || []).filter(isRealSet).forEach(function (st) {
+          var c = num(st.charge);
+          if (c != null) {
+            hasCharged = true; vol += c * st.reps;
+            if (maxCharge == null || c > maxCharge || (c === maxCharge && st.reps > maxChargeReps)) { maxCharge = c; maxChargeReps = st.reps; maxChargeDate = s.date; }
+          }
+          if (maxReps == null || st.reps > maxReps) { maxReps = st.reps; maxRepsCharge = (c != null ? c : null); maxRepsDate = s.date; }
+        });
+      });
+      if (hasCharged && (bestVol == null || vol > bestVol)) { bestVol = round(vol, 1); bestVolDate = s.date; }
+    });
+    return {
+      heaviestCharge: maxCharge == null ? null : { charge: maxCharge, reps: maxChargeReps, date: maxChargeDate },
+      mostReps: maxReps == null ? null : { reps: maxReps, charge: maxRepsCharge, date: maxRepsDate },
+      bestSessionVolume: bestVol == null ? null : { volume: bestVol, date: bestVolDate }
+    };
+  }
+
+  function exerciseSeries(args) {
+    var m = args.metric;
+    if (m === 'maxLoad') return exerciseMaxLoad(args.exerciseId, args.workoutSessions || [], args.range, args.now);
+    if (m === 'repsAtCharge') return exerciseRepsAtCharge(args.exerciseId, args.workoutSessions || [], args.charge, args.range, args.now);
+    if (m === 'volume') return exerciseVolume(args.exerciseId, args.workoutSessions || [], args.range, args.now);
+    throw new Error('metric musculation inconnue : ' + m);
+  }
+
+  // liste des charges réellement utilisées pour un exercice (pour proposer "reps à charge")
+  function chargesUsed(exerciseId, sessions) {
+    var set = {};
+    (sessions || []).filter(isValidSession).forEach(function (s) {
+      entriesForExercise(s, exerciseId).forEach(function (en) {
+        (en.sets || []).filter(isRealSet).forEach(function (st) { var c = num(st.charge); if (c != null) set[c] = true; });
+      });
+    });
+    return Object.keys(set).map(Number).sort(function (a, b) { return a - b; });
+  }
+
+  // un exercice n'apparaît dans Progression que s'il a >=1 vraie série
+  function exerciseHasData(exerciseId, sessions) {
+    return (sessions || []).filter(isValidSession).some(function (s) {
+      return entriesForExercise(s, exerciseId).some(function (en) { return (en.sets || []).some(isRealSet); });
+    });
+  }
+
+  // =================================================================
+  //  CARDIO (par type ; on ne compare jamais deux types)
+  // =================================================================
+  function cardioSeries(args) {
+    var type = args.cardioType;
+    var metric = args.metric;                                       // 'duration' | 'distance'
+    var rows = (args.cardioSessions || []).filter(function (c) { return c && c.date && c.type === type; });
+    var points = [];
+    rows.forEach(function (c) {
+      if (!inRange(c.date, args.range || 'all', args.now)) return;
+      var v = null;
+      if (metric === 'duration') v = num(c.durationMinutes);
+      else if (metric === 'distance') v = num(c.metrics ? c.metrics.distanceKm : null);
+      else throw new Error('metric cardio inconnue : ' + metric);
+      if (v == null) return;                                        // valeur absente -> pas de point
+      points.push({ date: c.date, value: v, sourceCardioId: c.id });
+    });
+    points.sort(byDateAsc);
+    var q = metric === 'duration'
+      ? 'Est-ce que je tiens plus longtemps (' + type + ') ?'
+      : 'Est-ce que je parcours plus de distance (' + type + ') ?';
+    var unit = metric === 'duration' ? 'min' : 'km';
+    return wrap(q, unit, points, { cardioType: type, metric: metric });
+  }
+
+  // Signale (ne corrige JAMAIS) les séries aberrantes, à faire remonter à l'utilisateur.
+  // Retour : liste de { sessionId, date, exerciseId, setIndex, reasons:[...] }.
+  function collectAnomalies(sessions, exerciseId) {
+    var out = [];
+    (sessions || []).forEach(function (s) {
+      if (!s || s.status !== 'completed') return;
+      (s.entries || []).forEach(function (en) {
+        if (exerciseId && en.exerciseId !== exerciseId) return;
+        (en.sets || []).forEach(function (st, i) {
+          var a = setAnomaly(st);
+          if (a) out.push({ sessionId: s.id, date: s.date || null, exerciseId: en.exerciseId, setIndex: i, charge: st.charge, reps: st.reps, reasons: a });
+        });
+      });
+    });
+    return out;
+  }
+
+  var API = {
+    bodySeries: bodySeries,
+    exerciseSeries: exerciseSeries,
+    exerciseRecords: exerciseRecords,
+    exerciseHasData: exerciseHasData,
+    chargesUsed: chargesUsed,
+    cardioSeries: cardioSeries,
+    collectAnomalies: collectAnomalies,
+    BODY_META: BODY_META,
+    _isRealSet: isRealSet,
+    _isValidSession: isValidSession
+  };
+
+  if (typeof module !== 'undefined' && module.exports) module.exports = API;
+  else root.ProgressionEngine = API;
+})(typeof self !== 'undefined' ? self : this);
+
+</script>
+<script>
+/* ============================================================
+ * AKLYA v1.6 — Bibliothèque d'exercices + Programmes
+ * Module PUR (aucun DOM). UMD : module.exports (Node) + window.HexisLibrary.
+ * Règles :
+ *  - chaque exercice a un id STABLE (slug), un nom canonique, des alias,
+ *    une catégorie, un type (external_load|bodyweight|assisted|duration|distance).
+ *  - un exercice assisté n'est JAMAIS représenté par une charge négative.
+ *  - installer un programme crée une COPIE utilisateur modifiable
+ *    (source non modifiée) et n'impose AUCUNE charge de départ.
+ *  - normalisation insensible aux accents/casse/espaces/tirets pour éviter les doublons.
+ * ============================================================ */
+(function (root) {
+  'use strict';
+
+  function E(id, name, aliases, category, movementPattern, equipment, type, mp, ms, repMin, repMax, rest, unilateral) {
+    function def(v, d) { return v === undefined ? d : v; }   // ne remplace QUE undefined (garde les 0 valides)
+    var isTimed = (type === 'duration' || type === 'distance');
+    return {
+      id: id, name: name, aliases: aliases || [], category: category, movementPattern: movementPattern || null,
+      equipment: equipment || [], exerciseType: type || 'external_load',
+      musclesPrimary: mp || [], musclesSecondary: ms || [],
+      // pas de plage de répétitions pour un exercice chronométré/en distance
+      defaultRepRange: isTimed ? null : { min: def(repMin, 8), max: def(repMax, 12) },
+      defaultRestSeconds: def(rest, isTimed ? 0 : 90),
+      unilateral: !!unilateral, archived: false
+    };
+  }
+
+  var LIBRARY = [
+    // ---- JAMBES ----
+    E('leg_press', 'Presse à cuisses', ['leg press', 'presse jambes', 'presse a cuisses'], 'jambes', 'poussee_jambes', ['machine'], 'external_load', ['quadriceps', 'fessiers'], ['ischios'], 8, 12, 120),
+    E('hack_squat', 'Hack squat', ['hack', 'hack squat'], 'jambes', 'poussee_jambes', ['machine'], 'external_load', ['quadriceps'], ['fessiers'], 8, 12, 150),
+    E('squat', 'Squat', ['back squat', 'squat barre'], 'jambes', 'poussee_jambes', ['barre'], 'external_load', ['quadriceps', 'fessiers'], ['ischios', 'lombaires'], 5, 10, 150),
+    E('squat_smith', 'Squat guidé (Smith)', ['smith squat', 'squat machine guidee'], 'jambes', 'poussee_jambes', ['machine'], 'external_load', ['quadriceps', 'fessiers'], ['ischios'], 8, 12, 120),
+    E('goblet_squat', 'Goblet squat', ['goblet'], 'jambes', 'poussee_jambes', ['halteres'], 'external_load', ['quadriceps', 'fessiers'], [], 8, 15, 90),
+    E('leg_extension', 'Leg extension', ['leg extension', 'extension jambes', 'extension quadriceps'], 'jambes', 'extension_genou', ['machine'], 'external_load', ['quadriceps'], [], 10, 15, 75),
+    E('leg_curl', 'Leg curl', ['leg curl', 'curl ischios', 'leg curl couche'], 'jambes', 'flexion_genou', ['machine'], 'external_load', ['ischios'], [], 10, 15, 90),
+    E('leg_curl_assis', 'Leg curl assis', ['seated leg curl', 'leg curl assis'], 'jambes', 'flexion_genou', ['machine'], 'external_load', ['ischios'], [], 10, 15, 75),
+    E('rdl_halteres', 'Soulevé de terre roumain haltères', ['rdl', 'romanian deadlift', 'souleve de terre roumain', 'sdt roumain'], 'jambes', 'charniere_hanche', ['halteres'], 'external_load', ['ischios', 'fessiers'], ['lombaires'], 8, 12, 120),
+    E('hip_thrust', 'Hip thrust', ['hip thrust', 'pont fessier'], 'fessiers', 'extension_hanche', ['barre', 'machine'], 'external_load', ['fessiers'], ['ischios'], 8, 12, 120),
+    E('fentes', 'Fentes', ['fentes', 'lunges', 'split squat'], 'jambes', 'fente', ['halteres'], 'external_load', ['quadriceps', 'fessiers'], ['ischios'], 8, 12, 90, true),
+    E('adducteurs', 'Machine adducteurs', ['adducteurs', 'adductor machine'], 'jambes', 'adduction', ['machine'], 'external_load', ['adducteurs'], [], 12, 20, 60),
+    E('abducteurs', 'Machine abducteurs', ['abducteurs', 'abductor machine'], 'fessiers', 'abduction', ['machine'], 'external_load', ['moyen fessier'], [], 12, 20, 60),
+    E('mollets_debout', 'Mollets debout', ['mollets', 'calf raise', 'extension mollets'], 'mollets', 'flexion_plantaire', ['machine'], 'external_load', ['mollets'], [], 10, 20, 60),
+    E('mollets_assis', 'Mollets assis', ['seated calf raise', 'mollets assis'], 'mollets', 'flexion_plantaire', ['machine'], 'external_load', ['mollets'], [], 12, 20, 60),
+    E('presse_mollets', 'Presse à mollets', ['calf press', 'presse mollets'], 'mollets', 'flexion_plantaire', ['machine'], 'external_load', ['mollets'], [], 10, 20, 60),
+    // ---- PECTORAUX ----
+    E('chest_press', 'Développé poitrine machine', ['chest press', 'developpe poitrine', 'developpe pectoraux machine', 'developpe poitrine machine'], 'pectoraux', 'poussee_horizontale', ['machine'], 'external_load', ['pectoraux'], ['triceps', 'epaules'], 8, 12, 90),
+    E('chest_press_incline', 'Développé incliné machine', ['incline chest press', 'developpe incline machine'], 'pectoraux', 'poussee_horizontale_haute', ['machine'], 'external_load', ['pectoraux'], ['triceps', 'epaules'], 8, 12, 90),
+    E('developpe_couche_halteres', 'Développé couché haltères', ['developpe couche halteres', 'db bench press', 'bench halteres'], 'pectoraux', 'poussee_horizontale', ['halteres'], 'external_load', ['pectoraux'], ['triceps', 'epaules'], 6, 10, 120),
+    E('developpe_incline_halteres', 'Développé incliné haltères', ['developpe incline halteres', 'incline db press'], 'pectoraux', 'poussee_horizontale_haute', ['halteres'], 'external_load', ['pectoraux'], ['triceps', 'epaules'], 8, 12, 120),
+    E('pec_deck', 'Pec deck', ['pec deck', 'butterfly', 'ecarte machine'], 'pectoraux', 'adduction_horizontale', ['machine'], 'external_load', ['pectoraux'], [], 10, 15, 75),
+    E('ecarte_poulie', 'Écartés à la poulie', ['ecarte poulie', 'cable fly'], 'pectoraux', 'adduction_horizontale', ['poulie'], 'external_load', ['pectoraux'], [], 12, 15, 60),
+    E('pompes', 'Pompes', ['pompes', 'push up', 'push-up'], 'pectoraux', 'poussee_horizontale', ['aucun'], 'bodyweight', ['pectoraux'], ['triceps', 'epaules'], 8, 20, 60),
+    E('dips', 'Dips', ['dips'], 'pectoraux', 'poussee_verticale_basse', ['barres'], 'bodyweight', ['pectoraux', 'triceps'], ['epaules'], 6, 12, 90),
+    // ---- DOS ----
+    E('tirage_vertical', 'Tirage vertical', ['lat machine', 'lat pulldown', 'tirage poitrine', 'pulldown'], 'dos', 'tirage_vertical', ['machine', 'poulie'], 'external_load', ['grand dorsal'], ['biceps', 'haut du dos'], 8, 12, 90),
+    E('tirage_vertical_neutre', 'Tirage vertical prise neutre', ['tirage neutre', 'neutral grip pulldown'], 'dos', 'tirage_vertical', ['machine', 'poulie'], 'external_load', ['grand dorsal'], ['biceps'], 8, 12, 90),
+    E('rowing_assis', 'Rowing assis', ['seated row', 'rowing assis', 'rowing poulie basse'], 'dos', 'tirage_horizontal', ['poulie', 'machine'], 'external_load', ['dos', 'grand dorsal'], ['biceps'], 8, 12, 90),
+    E('low_row', 'Low Row', ['low row', 'low-row', 'low row machine', 'rowing bas'], 'dos', 'tirage_horizontal', ['machine'], 'external_load', ['dos', 'grand dorsal'], ['biceps'], 8, 12, 90),
+    E('rowing_convergent', 'Rowing convergent', ['rowing convergent', 'converging row', 'machine row convergente'], 'dos', 'tirage_horizontal', ['machine'], 'external_load', ['dos'], ['biceps'], 8, 12, 120),
+    E('rowing_barre', 'Rowing barre', ['rowing barre', 'barbell row'], 'dos', 'tirage_horizontal', ['barre'], 'external_load', ['dos'], ['biceps', 'lombaires'], 6, 10, 120),
+    E('rowing_haltere', 'Rowing haltère', ['rowing haltere', 'db row', 'one arm row'], 'dos', 'tirage_horizontal', ['halteres'], 'external_load', ['dos'], ['biceps'], 8, 12, 90, true),
+    E('tractions', 'Tractions', ['tractions', 'pull up', 'pull-up'], 'dos', 'tirage_vertical', ['barre'], 'bodyweight', ['grand dorsal'], ['biceps'], 4, 12, 120),
+    E('tractions_assistees', 'Tractions assistées', ['tractions assistees', 'assisted pull up'], 'dos', 'tirage_vertical', ['machine'], 'assisted', ['grand dorsal'], ['biceps'], 6, 12, 120),
+    E('pull_over', 'Pull-over', ['pull over', 'pullover'], 'dos', 'tirage_vertical', ['halteres', 'poulie'], 'external_load', ['grand dorsal'], ['pectoraux'], 10, 15, 75),
+    E('face_pull', 'Face pull', ['face pull'], 'epaules', 'tirage_horizontal_haut', ['poulie'], 'external_load', ['arriere epaule'], ['haut du dos'], 12, 20, 60),
+    // ---- ÉPAULES ----
+    E('shoulder_press_machine', 'Shoulder press machine', ['shoulder press', 'developpe epaules machine', 'developpe militaire machine'], 'epaules', 'poussee_verticale', ['machine'], 'external_load', ['epaules'], ['triceps'], 8, 12, 90),
+    E('developpe_epaules_halteres', 'Développé épaules haltères', ['developpe epaules halteres', 'db shoulder press'], 'epaules', 'poussee_verticale', ['halteres'], 'external_load', ['epaules'], ['triceps'], 8, 12, 90),
+    E('developpe_militaire', 'Développé militaire (barre)', ['developpe militaire', 'overhead press', 'ohp'], 'epaules', 'poussee_verticale', ['barre'], 'external_load', ['epaules'], ['triceps'], 5, 10, 120),
+    E('elevations_laterales', 'Élévations latérales', ['elevations laterales', 'lateral raise', 'side raise'], 'epaules', 'abduction_epaule', ['halteres', 'machine'], 'external_load', ['deltoide lateral'], [], 12, 20, 60),
+    E('oiseau', 'Oiseau (arrière d\'épaule)', ['oiseau', 'reverse fly', 'rear delt', 'reverse pec deck'], 'epaules', 'abduction_horizontale', ['halteres', 'machine'], 'external_load', ['arriere epaule'], [], 12, 20, 60),
+    E('tirage_menton', 'Tirage menton', ['tirage menton', 'upright row'], 'epaules', 'tirage_vertical_haut', ['barre', 'poulie'], 'external_load', ['epaules', 'trapezes'], [], 10, 15, 75),
+    // ---- BICEPS ----
+    E('curl_biceps', 'Curl biceps', ['curl', 'curl biceps', 'biceps curl'], 'biceps', 'flexion_coude', ['halteres', 'barre'], 'external_load', ['biceps'], [], 10, 15, 60),
+    E('curl_marteau', 'Curl marteau', ['curl marteau', 'hammer curl'], 'biceps', 'flexion_coude', ['halteres'], 'external_load', ['biceps', 'brachial'], [], 10, 15, 60),
+    E('curl_pupitre', 'Curl pupitre', ['curl pupitre', 'larry scott', 'preacher curl'], 'biceps', 'flexion_coude', ['machine', 'barre'], 'external_load', ['biceps'], [], 10, 15, 60),
+    E('curl_poulie', 'Curl à la poulie', ['curl poulie', 'cable curl'], 'biceps', 'flexion_coude', ['poulie'], 'external_load', ['biceps'], [], 10, 15, 60),
+    // ---- TRICEPS ----
+    E('extension_triceps_poulie', 'Extension triceps poulie', ['extension triceps', 'pushdown', 'triceps poulie'], 'triceps', 'extension_coude', ['poulie'], 'external_load', ['triceps'], [], 10, 15, 60),
+    E('barre_au_front', 'Barre au front', ['barre au front', 'skullcrusher'], 'triceps', 'extension_coude', ['barre', 'halteres'], 'external_load', ['triceps'], [], 8, 12, 75),
+    E('extension_nuque', 'Extension nuque haltère', ['extension nuque', 'overhead triceps'], 'triceps', 'extension_coude', ['halteres'], 'external_load', ['triceps'], [], 10, 15, 60),
+    E('kickback', 'Kickback triceps', ['kickback'], 'triceps', 'extension_coude', ['halteres', 'poulie'], 'external_load', ['triceps'], [], 12, 20, 45),
+    // ---- ABDOMINAUX ----
+    E('abdominal_crunch_machine', 'Abdominal crunch machine', ['crunch machine', 'abdominal crunch', 'crunch'], 'abdominaux', 'flexion_tronc', ['machine'], 'external_load', ['abdominaux'], [], 10, 15, 60),
+    E('crunch_poulie', 'Crunch à la poulie', ['crunch poulie', 'cable crunch'], 'abdominaux', 'flexion_tronc', ['poulie'], 'external_load', ['abdominaux'], [], 12, 20, 60),
+    E('releve_jambes', 'Relevé de jambes', ['releve de jambes', 'leg raise'], 'abdominaux', 'flexion_hanche', ['aucun'], 'bodyweight', ['abdominaux'], [], 8, 20, 60),
+    E('gainage', 'Gainage (planche)', ['gainage', 'planche', 'plank'], 'abdominaux', 'anti_extension', ['aucun'], 'duration', ['abdominaux'], [], 20, 60, 60),
+    E('abdominaux', 'Abdominaux', ['abdos', 'abdominaux'], 'abdominaux', 'flexion_tronc', ['aucun'], 'bodyweight', ['abdominaux'], [], 10, 20, 60),
+    // ---- CARDIO (référence ; le suivi cardio détaillé reste géré séparément) ----
+    E('tapis', 'Tapis', ['treadmill', 'tapis de course'], 'cardio', 'marche_course', ['machine'], 'duration', [], [], undefined, undefined, 0),
+    E('velo', 'Vélo', ['bike', 'velo'], 'cardio', 'pedalage', ['machine'], 'duration', [], [], undefined, undefined, 0),
+    E('course_exterieure', 'Course (extérieur)', ['course', 'running', 'run'], 'cardio', 'course', ['aucun'], 'distance', [], [], undefined, undefined, 0),
+    E('marche', 'Marche', ['walk', 'marche'], 'cardio', 'marche', ['aucun'], 'duration', [], [], undefined, undefined, 0)
+  ];
+
+  // ---- normalisation & recherche ----
+  function normalize(s) {
+    return (s || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\s\-_'’]/g, '');
+  }
+  function byId(id) { for (var i = 0; i < LIBRARY.length; i++) if (LIBRARY[i].id === id) return LIBRARY[i]; return null; }
+
+  // Résout un nom OU alias vers l'exercice canonique (insensible accents/casse/espaces/tirets)
+  function resolve(input) {
+    var q = normalize(input); if (!q) return null;
+    for (var i = 0; i < LIBRARY.length; i++) {
+      var e = LIBRARY[i];
+      if (normalize(e.name) === q) return e;
+      for (var j = 0; j < e.aliases.length; j++) if (normalize(e.aliases[j]) === q) return e;
+    }
+    return null;
+  }
+
+  // Autocomplétion : nom-commence > alias-commence > contient. Renvoie jusqu'à `limit`.
+  function searchExercises(query, opts) {
+    opts = opts || {}; var limit = opts.limit || 8;
+    var q = normalize(query);
+    if (!q) return [];
+    var starts = [], aliasStarts = [], contains = [];
+    LIBRARY.forEach(function (e) {
+      if (e.archived) return;
+      var n = normalize(e.name);
+      if (n.indexOf(q) === 0) { starts.push(e); return; }
+      var aliasStart = e.aliases.some(function (a) { return normalize(a).indexOf(q) === 0; });
+      if (aliasStart) { aliasStarts.push(e); return; }
+      var contained = n.indexOf(q) >= 0 || e.aliases.some(function (a) { return normalize(a).indexOf(q) >= 0; });
+      if (contained) contains.push(e);
+    });
+    var out = starts.concat(aliasStarts).concat(contains).slice(0, limit);
+    return out.map(function (e) {
+      var matchedAlias = null;
+      if (normalize(e.name).indexOf(q) !== 0) { matchedAlias = e.aliases.filter(function (a) { return normalize(a).indexOf(q) >= 0; })[0] || null; }
+      return { id: e.id, name: e.name, category: e.category, equipment: e.equipment, matchedAlias: matchedAlias };
+    });
+  }
+  // Une correspondance EXACTE existe-t-elle ? (pour n'afficher "Créer" que sinon)
+  function hasExactMatch(query) { return !!resolve(query); }
+
+  // ---- PROGRAMMES ----
+  // item : [libId, sets, repMin, repMax, rest]
+  function it(ref, sets, rmin, rmax, rest) { return { ref: ref, sets: sets, repMin: rmin, repMax: rmax, rest: rest }; }
+  var PROGRAMS = [
+    {
+      id: 'decouverte', name: 'Découverte', level: 'decouverte', daysPerWeek: 2,
+      description: 'Deux séances full body A/B, 2 jours/semaine. Pour débuter ou reprendre.',
+      templates: [
+        { name: 'Découverte A', items: [it('leg_press', 2, 10, 15, 90), it('chest_press', 2, 10, 15, 90), it('tirage_vertical', 2, 10, 15, 90), it('leg_curl_assis', 2, 10, 15, 75), it('shoulder_press_machine', 2, 10, 15, 90), it('abdominal_crunch_machine', 2, 10, 15, 60)] },
+        { name: 'Découverte B', items: [it('leg_press', 2, 10, 15, 90), it('rowing_assis', 2, 10, 15, 90), it('chest_press', 2, 10, 15, 90), it('leg_extension', 2, 10, 15, 75), it('elevations_laterales', 2, 12, 15, 60), it('abdominal_crunch_machine', 2, 10, 15, 60)] }
+      ]
+    },
+    {
+      id: 'debutant', name: 'Débutant', level: 'debutant', daysPerWeek: 3,
+      description: 'Full body A/B alterné (A-B-A puis B-A-B), 3 jours/semaine.',
+      templates: [
+        { name: 'Débutant A', items: [it('leg_press', 3, 8, 12, 120), it('chest_press', 3, 8, 12, 90), it('tirage_vertical', 3, 8, 12, 90), it('leg_curl', 3, 10, 15, 75), it('shoulder_press_machine', 2, 8, 12, 90), it('abdominal_crunch_machine', 3, 10, 15, 60)] },
+        { name: 'Débutant B', items: [it('leg_press', 3, 8, 12, 120), it('rowing_assis', 3, 8, 12, 90), it('developpe_couche_halteres', 3, 8, 12, 90), it('leg_extension', 3, 10, 15, 75), it('elevations_laterales', 2, 12, 15, 60), it('curl_biceps', 2, 10, 15, 60), it('extension_triceps_poulie', 2, 10, 15, 60)] }
+      ]
+    },
+    {
+      id: 'intermediaire', name: 'Intermédiaire', level: 'intermediaire', daysPerWeek: 4,
+      description: 'Haut A / Bas A / Haut B / Bas B, 4 jours/semaine.',
+      templates: [
+        { name: 'Haut du corps A', items: [it('developpe_couche_halteres', 4, 6, 10, 120), it('tirage_vertical', 4, 8, 12, 120), it('rowing_assis', 3, 8, 12, 90), it('shoulder_press_machine', 3, 8, 12, 90), it('elevations_laterales', 3, 12, 20, 60), it('extension_triceps_poulie', 3, 10, 15, 60), it('curl_biceps', 3, 10, 15, 60)] },
+        { name: 'Bas du corps A', items: [it('leg_press', 4, 6, 10, 150), it('rdl_halteres', 3, 8, 12, 120), it('leg_curl', 3, 10, 15, 90), it('leg_extension', 3, 10, 15, 75), it('mollets_debout', 3, 10, 20, 60), it('abdominal_crunch_machine', 3, 10, 15, 60)] },
+        { name: 'Haut du corps B', items: [it('developpe_incline_halteres', 3, 8, 12, 120), it('rowing_convergent', 4, 8, 12, 120), it('tirage_vertical_neutre', 3, 8, 12, 90), it('pec_deck', 3, 10, 15, 75), it('elevations_laterales', 3, 12, 20, 60), it('extension_triceps_poulie', 3, 10, 15, 60), it('curl_marteau', 3, 10, 15, 60)] },
+        { name: 'Bas du corps B', items: [it('hack_squat', 4, 8, 12, 150), it('hip_thrust', 3, 8, 12, 120), it('leg_curl', 3, 10, 15, 90), it('fentes', 3, 8, 12, 90), it('mollets_debout', 3, 10, 20, 60), it('abdominaux', 3, 10, 15, 60)] }
+      ]
+    },
+    {
+      id: 'avance', name: 'Avancé (base à personnaliser)', level: 'avance', daysPerWeek: 4,
+      description: 'Base avancée à personnaliser — destinée aux personnes déjà autonomes dans leur entraînement. À adapter selon volume, points faibles, blessures et objectif.',
+      customizable: true,
+      templates: [
+        { name: 'Pectoraux + dos', items: [it('developpe_couche_halteres', 4, 6, 10, 120), it('developpe_incline_halteres', 3, 8, 12, 90), it('tirage_vertical', 4, 8, 12, 120), it('rowing_convergent', 3, 8, 12, 90), it('pec_deck', 3, 10, 15, 60)] },
+        { name: 'Jambes', items: [it('leg_press', 4, 6, 10, 150), it('rdl_halteres', 3, 8, 12, 120), it('leg_curl', 3, 10, 15, 90), it('leg_extension', 3, 10, 15, 75), it('mollets_debout', 4, 10, 20, 60)] },
+        { name: 'Épaules + bras', items: [it('shoulder_press_machine', 4, 8, 12, 90), it('elevations_laterales', 4, 12, 20, 60), it('oiseau', 3, 12, 20, 60), it('curl_biceps', 3, 10, 15, 60), it('extension_triceps_poulie', 3, 10, 15, 60)] },
+        { name: 'Jambes + dos', items: [it('hack_squat', 4, 8, 12, 150), it('hip_thrust', 3, 8, 12, 120), it('rowing_barre', 4, 6, 10, 120), it('tirage_vertical_neutre', 3, 8, 12, 90), it('mollets_assis', 3, 12, 20, 60)] }
+      ]
+    }
+  ];
+  function programById(id) { for (var i = 0; i < PROGRAMS.length; i++) if (PROGRAMS[i].id === id) return PROGRAMS[i]; return null; }
+
+  // Assistant : propose un programme depuis les réponses (l'app ne l'installe pas d'office)
+  function planProgram(answers) {
+    answers = answers || {};
+    if (answers.experience === 'create') return null;                 // l'utilisateur veut créer lui-même
+    var days = answers.daysPerWeek || 3;
+    if (answers.experience === 'beginner_restart') return days <= 2 ? 'decouverte' : 'debutant';
+    if (answers.experience === 'under_1y') return days >= 4 ? 'intermediaire' : 'debutant';
+    if (answers.experience === 'over_1y') return days >= 4 ? 'intermediaire' : 'debutant';
+    return days <= 2 ? 'decouverte' : (days >= 4 ? 'intermediaire' : 'debutant');
+  }
+
+  // Installe un programme : crée des COPIES utilisateur modifiables. Ne touche pas PROGRAMS.
+  // Garantit l'existence des exercices en bibliothèque (par libId), SANS imposer de charge.
+  function installProgram(adapter, programId) {
+    var prog = programById(programId); if (!prog) throw new Error('programme inconnu : ' + programId);
+    // PRÉ-VALIDATION : tous les refs doivent exister AVANT toute création (pas d'installation partielle)
+    prog.templates.forEach(function (tpl) {
+      tpl.items.forEach(function (item) {
+        if (!byId(item.ref)) throw new Error('exercice bibliothèque inconnu : ' + item.ref + ' (aucune installation effectuée)');
+      });
+    });
+    var existing = {}; adapter.getExercises().forEach(function (e) { if (e.libId) existing[e.libId] = e; });
+    function ensureExercise(libId) {
+      if (existing[libId]) return existing[libId];
+      var def = byId(libId);
+      var ex = adapter.createExercise(def.name, null);               // AUCUNE charge imposée
+      ex.libId = def.id; ex.category = def.category; ex.exerciseType = def.exerciseType;
+      ex.aliases = (ex.aliases || []).concat(def.aliases);
+      ex.musclesPrimary = def.musclesPrimary; ex.musclesSecondary = def.musclesSecondary;
+      ex.movementPattern = def.movementPattern; ex.equipment = def.equipment; ex.unilateral = def.unilateral;
+      var reps = def.defaultRepRange ? (def.defaultRepRange.min + '-' + def.defaultRepRange.max) : null;
+      ex.defaults = { setsTarget: 3, repsTarget: reps, restSeconds: def.defaultRestSeconds };
+      adapter.saveExercise(ex); existing[libId] = ex; return ex;
+    }
+    var templateIds = [];
+    prog.templates.forEach(function (tpl) {
+      var items = tpl.items.map(function (item, i) {
+        var ex = ensureExercise(item.ref);
+        return { exerciseId: ex.id, order: i + 1, prescription: { setsTarget: item.sets, repsTarget: item.repMin + '-' + item.repMax, restSeconds: item.rest } };
+      });
+      var created = adapter.saveTemplate({ name: tpl.name, items: items, source: 'user', installedFrom: prog.id });
+      templateIds.push(created.id);
+    });
+    return { programId: prog.id, templateIds: templateIds, templatesCreated: templateIds.length };
+  }
+
+  // Règle de double progression : suggère (ne modifie jamais) après 3×repMax réussies.
+  // sessionSets = [{charge,reps}] de la dernière séance pour cet exercice.
+  function progressionSuggestion(prescription, sessionSets) {
+    var realSets = (sessionSets || []).filter(function (s) { return s && s.reps != null && s.reps > 0; });
+    var repMax = prescription && prescription.repsTarget ? parseInt(String(prescription.repsTarget).split('-').pop(), 10) : null;
+    if (!repMax || realSets.length < (prescription.setsTarget || realSets.length)) return { suggest: false };
+    var allAtTop = realSets.every(function (s) { return s.reps >= repMax; });
+    if (!allAtTop) return { suggest: false };
+    var charge = realSets[realSets.length - 1].charge;
+    return {
+      suggest: true,
+      message: 'Tu as atteint le haut de la plage sur toutes tes séries. Tu peux essayer la charge suivante.',
+      options: ['Continuer' + (charge != null ? ' à ' + charge + ' kg' : ''), 'Essayer la charge suivante', 'Choisir une autre charge']
+    };
+  }
+
+  var API = {
+    LIBRARY: LIBRARY, PROGRAMS: PROGRAMS,
+    normalize: normalize, resolve: resolve, byId: byId,
+    searchExercises: searchExercises, hasExactMatch: hasExactMatch,
+    programById: programById, planProgram: planProgram, installProgram: installProgram,
+    progressionSuggestion: progressionSuggestion,
+    count: LIBRARY.length
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = API;
+  else root.HexisLibrary = API;
+})(typeof self !== 'undefined' ? self : this);
+
+</script>
 <script>
 /* =====================================================================
    Carnet-Lamine — Moteur de migration v2 -> v3 (fonctions pures)
@@ -923,11 +1524,11 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   var A = null;               // adaptateur
   var root = document.getElementById('app');
   var APP_NAME = (window.CARNET_CONFIG && window.CARNET_CONFIG.appName) || 'AKLYA';
-  var PROGRESSION_ON = false;
-  var PROGRAMS_ON = false;
-  var V16_UX = false;
-  var IS_BETA = false;
-  var APP_VERSION = IS_BETA ? '1.6.0 bêta' : ((PROGRAMS_ON || PROGRESSION_ON) ? '1.6.0-test' : '1.5.1');
+  var PROGRESSION_ON = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.showProgression) && (typeof ProgressionEngine !== 'undefined');
+  var PROGRAMS_ON = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.showPrograms) && (typeof HexisLibrary !== 'undefined');
+  var V16_UX = PROGRESSION_ON || PROGRAMS_ON;   // corrections d'usage v1.6, édition test uniquement
+  var IS_BETA = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.beta);   // édition bêta publique (vierge, partageable)
+  var APP_VERSION = IS_BETA ? '1.6.0 bêta' : ((window.CARNET_CONFIG && window.CARNET_CONFIG.versionLabel) || ((PROGRAMS_ON || PROGRESSION_ON) ? '1.6.0-test' : '1.5.1'));
   var USER = 'toi';
   function loadUser() { try { var s = A.getSettings(); if (s && s.userName) USER = s.userName; } catch (e) {} }
 
@@ -1130,6 +1731,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     root.appendChild(main);
     var nav = el('nav', 'tabbar');
     var tabs = [['accueil', 'Accueil', '◷'], ['seance', 'Séance', '⊕'], ['historique', 'Historique', '≡']];
+    if (PROGRESSION_ON) tabs.push(['progression', 'Progression', '📈']);
     tabs.push(['donnees', 'Données', '⛃']);
     tabs.forEach(function (t) {
       var b = el('button', 'tab' + (t[0] === tab ? ' active' : '')); b.innerHTML = '<span class="ti">' + t[2] + '</span><span class="tl">' + t[1] + '</span>';
@@ -1140,6 +1742,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
       if (tab === 'accueil') viewAccueil(main);
       else if (tab === 'seance') viewSeance(main);
       else if (tab === 'historique') viewHistorique(main);
+      else if (tab === 'progression' && PROGRESSION_ON) viewProgression(main);
       else if (tab === 'donnees') viewDonnees(main);
       else if (tab === 'diagnostic') viewDiagnostic(main);
     } catch (e) { renderError(e, 'écran ' + tab); }
@@ -1185,6 +1788,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
       cell.appendChild(el('div', 'day-num', String(new Date(dISO + 'T00:00:00').getDate())));
       var typeLabel = ev ? planLabel(ev) : '—';
       cell.appendChild(el('div', 'day-type' + (ev ? '' : ' empty'), typeLabel));
+      if (V16_UX && ev && ev.plannedType === 'workout' && ev.status === 'planned' && (ev.templateId || ev.freeChosen)) cell.appendChild(el('div', 'day-todo', 'À faire'));
       if (ev && ev.status === 'done') cell.appendChild(el('div', 'day-dot done'));
       else if (ev && ev.status === 'in-progress') cell.appendChild(el('div', 'day-dot prog'));
       (function (d) { cell.onclick = function () { openDay(d); }; })(dISO);
@@ -1226,6 +1830,11 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     };
     mrow.appendChild(wI); mrow.appendChild(tI); mrow.appendChild(mB);
     mForm.appendChild(mrow);
+    if (V16_UX) {
+      var fullLink = el('button', 'link-btn', '＋ Saisir toutes mes mesures');
+      fullLink.onclick = function () { viewNewMeasurement(null); };
+      mForm.appendChild(fullLink);
+    }
     main.appendChild(mForm);
 
     var foot = el('p', 'app-foot', 'Le temps passé à t\'entraîner compte plus que le temps passé ici.');
@@ -1239,6 +1848,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var items = [];
     A.getSessions().filter(function (s) { return s.date; }).forEach(function (s) { items.push({ kind: 'workout', date: s.date, s: s }); });
     A.getCardioSessions().filter(function (c) { return c.date; }).forEach(function (c) { items.push({ kind: 'cardio', date: c.date, c: c }); });
+    if (V16_UX) A.getBodyMeasurements().filter(function (m) { return m.date; }).forEach(function (m) { items.push({ kind: 'measure', date: m.date, m: m }); });
     items.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
     if (!items.length) { main.appendChild(el('p', 'empty', 'Rien pour l\'instant. Démarre une séance ou note un cardio.')); return; }
     var list = el('div', 'list');
@@ -1247,6 +1857,11 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
       var left = el('div', 'li-left');
       left.appendChild(el('div', 'li-date', fmtDate(it.date)));
       if (it.kind === 'workout') {
+        /*__V16UX_ELSE_START__*/
+        if (V16_UX && it.s.templateName) {
+          left.appendChild(el('div', 'li-sub', it.s.templateName + ' · ' + it.s.entries.length + ' exercice(s)'));
+        } else
+        /*__V16UX_ELSE_END__*/
         {
           left.appendChild(el('div', 'li-sub', it.s.entries.length + ' exercice(s)'));
         }
@@ -1263,6 +1878,16 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
         var r2 = el('div', 'li-right'); r2.appendChild(el('span', 'chip cardio', 'cardio')); row.appendChild(r2);
         row.onclick = function () { cardioForm(it.c.date, it.c.id); };
       }
+      else if (it.kind === 'measure') {
+        var filled = MEAS_FIELDS.filter(function (f) { return it.m.values && it.m.values[f.key] != null; });
+        var compat = (it.m.values && it.m.values.abdomenAtNavelCm == null && it.m.values.waistCm != null);
+        var summary = filled.slice(0, 5).map(function (f) { return f.short + ' ' + fmtMeasVal(it.m.values[f.key]) + f.unit; });
+        if (compat) summary.unshift('Ventre ' + it.m.values.waistCm + ' cm');
+        left.appendChild(el('div', 'li-sub', summary.join(' · ') || 'mesure'));
+        row.appendChild(left);
+        var r3 = el('div', 'li-right'); r3.appendChild(el('span', 'chip meas', 'mesure')); row.appendChild(r3);
+        row.onclick = function () { viewNewMeasurement(it.m.id); };
+      }
       list.appendChild(row);
     });
     main.appendChild(list);
@@ -1272,6 +1897,12 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var exById = {}; A.getExercises().forEach(function (e) { exById[e.id] = e; });
     var main = document.getElementById('main'); clear(main);
     var back = el('button', 'back', '‹ Historique'); back.onclick = function () { renderApp('historique'); }; main.appendChild(back);
+    /*__V16UX_ELSE_START__*/
+    if (V16_UX && s.templateName) {
+      main.appendChild(el('h1', 'display screen-title', s.templateName));
+      main.appendChild(el('p', 'lede small', fmtDate(s.date)));
+    } else
+    /*__V16UX_ELSE_END__*/
     {
       main.appendChild(el('h1', 'display screen-title', fmtDate(s.date)));
     }
@@ -1510,6 +2141,8 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     if (ev.plannedType === 'workout') {
       var t = ev.templateId ? A.getTemplates().filter(function (x) { return x.id === ev.templateId; })[0] : null;
       if (t) return t.name;                       // renommé -> nouveau nom automatiquement (lien par id)
+      if (V16_UX && ev.templateId) return 'Modèle indisponible';
+      if (V16_UX && ev.freeChosen) return 'Séance libre';
       return 'Séance';
     }
     var m = { cardio: 'Cardio', rest: 'Repos', 'active-recovery': 'Récup active' }; return m[ev.plannedType] || ev.plannedType;
@@ -1558,6 +2191,9 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
 
     // action selon le type
     if (ev.plannedType === 'workout') {
+      /*__PLANMODEL_ELSE_START__*/
+      if (V16_UX) { workoutDayChooser(main, dISO, ev, linked); } else
+      /*__PLANMODEL_ELSE_END__*/
       {
         var b = el('button', 'btn primary', ev.status === 'done' ? 'Séance enregistrée ✓ — en refaire une' : 'Démarrer la séance');
         b.onclick = function () { startWorkoutForDay(dISO, ev); };
@@ -1580,6 +2216,48 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
         var cancel = el('button', 'btn ghost', 'Annuler'); cancel.onclick = function () { renderApp('accueil'); }; main.appendChild(cancel);
       }
     }
+  }
+  // Choix du modèle précis pour un jour de musculation (édition test).
+  function workoutDayChooser(main, dISO, ev, linked) {
+    var templates = A.getTemplates();
+    var chosen = ev.templateId ? templates.filter(function (t) { return t.id === ev.templateId; })[0] : null;
+    var missing = ev.templateId && !chosen;     // le modèle a été supprimé
+
+    if (missing) {
+      var warn = el('div', 'note'); warn.textContent = 'Modèle indisponible : il a été supprimé. Choisis une autre séance.'; main.appendChild(warn);
+    }
+
+    main.appendChild(el('div', 'card-eyebrow', 'Quelle séance ?'));
+    if (!templates.length) {
+      main.appendChild(el('p', 'lede small', 'Aucun modèle installé.'));
+      var libre0 = el('button', 'btn ghost' + (ev.freeChosen ? ' active-choice' : ''), 'Séance libre');
+      libre0.onclick = function () { ev.templateId = null; ev.freeChosen = true; A.savePlannedEvent(ev); openDay(dISO); };
+      main.appendChild(libre0);
+      var create = el('button', 'btn ghost', 'Créer un modèle'); create.onclick = function () { viewModeles(main); }; main.appendChild(create);
+    } else {
+      var list = el('div', 'list');
+      templates.forEach(function (t) {
+        var b = el('button', 'list-item' + (ev.templateId === t.id ? ' picked' : ''));
+        var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', t.name));
+        left.appendChild(el('div', 'li-sub', (t.items ? t.items.length : 0) + ' exercice(s)' + (t.installedFrom ? ' · ' + t.installedFrom : ''))); b.appendChild(left);
+        b.appendChild(el('span', 'menu-chev', ev.templateId === t.id ? '✓' : '›'));
+        b.onclick = function () { ev.templateId = t.id; ev.freeChosen = false; A.savePlannedEvent(ev); openDay(dISO); };
+        list.appendChild(b);
+      });
+      main.appendChild(list);
+      var libre = el('button', 'btn ghost' + (ev.freeChosen && !ev.templateId ? ' active-choice' : ''), 'Séance libre');
+      libre.onclick = function () { ev.templateId = null; ev.freeChosen = true; A.savePlannedEvent(ev); openDay(dISO); };
+      main.appendChild(libre);
+    }
+
+    // Démarrer seulement APRÈS un choix explicite (jamais de sélection automatique)
+    var canStart = (ev.templateId && chosen) || ev.freeChosen;
+    if (canStart) {
+      var start = el('button', 'btn primary wide', ev.status === 'done' ? 'Séance enregistrée ✓ — en refaire une' : 'Démarrer ' + (chosen ? chosen.name : 'la séance libre'));
+      start.onclick = function () { startWorkoutForDay(dISO, ev); };
+      main.appendChild(start);
+    }
+    if (linked) main.appendChild(sessionSummaryCard(linked, dISO));
   }
 
   function setDayType(dISO, type, hasLinked) {
@@ -1727,6 +2405,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var gerer = el('button', 'link-btn', 'Gérer mes modèles'); gerer.onclick = function () { viewModeles(main); };
     var biblio = el('button', 'link-btn', 'Bibliothèque'); biblio.onclick = function () { viewBibliotheque(main); };
     sec.appendChild(libre); sec.appendChild(gerer); sec.appendChild(biblio);
+    if (PROGRAMS_ON) { var progr = el('button', 'link-btn', 'Programmes'); progr.onclick = function () { viewProgrammes(main); }; sec.appendChild(progr); }
     main.appendChild(sec);
   }
   function nextLetter() {
@@ -1924,6 +2603,55 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
       var q = norm(search.value);
       clear(results);
       var lib = A.getExercises().slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+      // Édition test : une seule entrée par exercice réel + sources étiquetées.
+      if (PROGRAMS_ON) {
+        // identité d'un exercice perso : son libId, sinon l'exercice de bibliothèque qu'il résout par nom/alias, sinon son nom normalisé
+        function identity(e) {
+          if (e.libId) return 'lib:' + e.libId;
+          var r = HexisLibrary.resolve(e.name); if (r) return 'lib:' + r.id;
+          return 'name:' + norm(e.name);
+        }
+        var seen = {}, personal = [], coveredLibIds = {};
+        lib.forEach(function (e) {
+          if (q && norm(e.name).indexOf(q) < 0) {
+            // laisser aussi passer une correspondance par alias de la bibliothèque structurée
+            var rr = HexisLibrary.resolve(e.name);
+            if (!(rr && (norm(rr.name).indexOf(q) >= 0 || rr.aliases.some(function (a) { return norm(a).indexOf(q) >= 0; })))) return;
+          }
+          var id = identity(e);
+          if (id.indexOf('lib:') === 0) coveredLibIds[id.slice(4)] = true;
+          if (seen[id]) return;                 // même exercice réel déjà listé -> une seule entrée
+          seen[id] = true; personal.push(e);
+        });
+        if (personal.length) {
+          results.appendChild(el('div', 'card-eyebrow', 'Tes exercices'));
+          var lp = el('div', 'list');
+          personal.forEach(function (e) {
+            var srcTag = e.libId || HexisLibrary.resolve(e.name) ? 'Personnel · lié à la bibliothèque' : 'Personnel';
+            lp.appendChild(pickRow(e.name, function () { addToTemplate(templateId, e); }, srcTag));
+          });
+          results.appendChild(lp);
+        }
+        // suggestions bibliothèque : exclure ce que tu possèdes déjà (par identité réelle)
+        if (q) {
+          var sugg = libraryAutocomplete(search.value).filter(function (s) { return !coveredLibIds[s.id]; });
+          if (sugg.length) {
+            results.appendChild(el('div', 'card-eyebrow', 'Bibliothèque AKLYA'));
+            var lsg = el('div', 'list');
+            sugg.forEach(function (s) {
+              var sub = s.category + (s.equipment && s.equipment.length ? ' · ' + s.equipment.join('/') : '') + (s.matchedAlias ? '  (alias : ' + s.matchedAlias + ')' : '');
+              lsg.appendChild(pickRow(s.name, function () { var ex = ensureLibraryExercise(s.id); if (ex) addToTemplate(templateId, ex); }, sub));
+            });
+            results.appendChild(lsg);
+          }
+          if (!HexisLibrary.hasExactMatch(search.value) && !personal.length) {
+            var cb = el('button', 'btn ghost', '＋ Créer « ' + search.value.trim() + ' »');
+            cb.onclick = function () { var ex = A.createExercise(search.value.trim(), null); addToTemplate(templateId, ex); };
+            results.appendChild(cb);
+          }
+        }
+        return;
+      }
       var libMatch = lib.filter(function (e) { return !q || norm(e.name).indexOf(q) >= 0; });
       if (libMatch.length) {
         results.appendChild(el('div', 'card-eyebrow', 'Ta bibliothèque'));
@@ -1958,7 +2686,393 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     templateEditor(templateId);
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  //  PROGRESSION (maquette — édition test uniquement)
+  //  Branchée sur ProgressionEngine. Chaque graphique = une question.
+  // ═══════════════════════════════════════════════════════════════
+  var PROG_RANGE = 'all';
+  var PROG_EX_METRIC = 'maxLoad';
+  var PROG_CHARGE = null;
+  var PROG_CARDIO_METRIC = 'duration';
+  var CARDIO_LABELS = { treadmill: 'Tapis', walk: 'Marche', run: 'Course', bike: 'Vélo', elliptical: 'Elliptique', rower: 'Rameur', other: 'Autre' };
+  function fmtNum(v) { return (Math.round(v * 100) / 100).toString().replace('.', ','); }
+  function fmtDateShort(iso) { try { var d = new Date(iso + 'T00:00:00'); return d.getDate() + '/' + (d.getMonth() + 1); } catch (e) { return iso; } }
 
+  // Graphique en SVG natif (aucune dépendance) + version texte accessible.
+  function svgChart(series, main) {
+    var pts = series.points || [];
+    var card = el('section', 'card prog-chart');
+    card.appendChild(el('div', 'prog-question', series.question));
+    if (series.notApplicable) { card.appendChild(el('p', 'empty', series.notApplicableReason || 'Non calculable.')); main.appendChild(card); return; }
+    if (!pts.length) { card.appendChild(el('p', 'empty', 'Aucune donnée enregistrée.')); main.appendChild(card); return; }
+    if (pts.length === 1) { card.appendChild(el('p', 'prog-note', 'Une première valeur est enregistrée (' + fmtNum(pts[0].value) + ' ' + series.unit + '). Il faut au moins deux valeurs pour mesurer une évolution.')); }
+    var W = 300, H = 150, padL = 34, padR = 10, padT = 12, padB = 22;
+    var ys = pts.map(function (p) { return p.value; });
+    var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
+    if (minY === maxY) { minY -= 1; maxY += 1; }
+    var plotW = W - padL - padR, plotH = H - padT - padB;
+    function X(i) { return padL + (pts.length === 1 ? plotW / 2 : plotW * i / (pts.length - 1)); }
+    function Y(v) { return padT + plotH * (1 - (v - minY) / (maxY - minY)); }
+    var dPath = pts.map(function (p, i) { return (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(p.value).toFixed(1); }).join(' ');
+    var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="' + series.question + '">';
+    svg += '<line x1="' + padL + '" y1="' + padT + '" x2="' + padL + '" y2="' + (H - padB) + '" stroke="#d9d5cc"/>';
+    svg += '<line x1="' + padL + '" y1="' + (H - padB) + '" x2="' + (W - padR) + '" y2="' + (H - padB) + '" stroke="#d9d5cc"/>';
+    svg += '<text x="2" y="' + (Y(maxY) + 4) + '" font-size="9" fill="#7a756c">' + fmtNum(maxY) + '</text>';
+    svg += '<text x="2" y="' + (Y(minY) + 4) + '" font-size="9" fill="#7a756c">' + fmtNum(minY) + '</text>';
+    if (pts.length > 1) svg += '<path d="' + dPath + '" fill="none" stroke="#1f2d34" stroke-width="2"/>';
+    pts.forEach(function (p, i) { svg += '<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(p.value).toFixed(1) + '" r="3" fill="#1f2d34"/>'; });
+    svg += '<text x="' + padL + '" y="' + (H - 6) + '" font-size="9" fill="#7a756c">' + fmtDateShort(pts[0].date) + '</text>';
+    if (pts.length > 1) svg += '<text x="' + (W - padR) + '" y="' + (H - 6) + '" font-size="9" fill="#7a756c" text-anchor="end">' + fmtDateShort(pts[pts.length - 1].date) + '</text>';
+    svg += '</svg>';
+    var holder = el('div', 'prog-svg'); holder.innerHTML = svg; card.appendChild(holder);
+    var s = series.summary;
+    if (s && s.count >= 2) {
+      var bits = 'Départ ' + fmtNum(s.first) + ' ' + series.unit + ' → actuel ' + fmtNum(s.latest) + ' ' + series.unit;
+      if (s.absoluteChange != null) bits += '  (' + (s.absoluteChange >= 0 ? '+' : '') + fmtNum(s.absoluteChange) + ' ' + series.unit + ')';
+      if (s.percentChange != null) bits += '  ' + (s.percentChange >= 0 ? '+' : '') + fmtNum(s.percentChange) + ' %';
+      card.appendChild(el('div', 'prog-summary', bits));
+    }
+    var det = el('details', 'prog-text');
+    var sum = el('summary', ''); sum.textContent = 'Voir les valeurs'; det.appendChild(sum);
+    var ul = el('div', 'prog-values');
+    pts.forEach(function (p) { ul.appendChild(el('div', 'prog-val-row', fmtDateShort(p.date) + ' : ' + fmtNum(p.value) + ' ' + series.unit + (p.reps != null ? ' (' + p.reps + ' reps)' : ''))); });
+    det.appendChild(ul); card.appendChild(det);
+    main.appendChild(card);
+  }
+
+  function rangeSelector(onPick) {
+    var wrap = el('div', 'range-row');
+    [['1m', '1 mois'], ['3m', '3 mois'], ['6m', '6 mois'], ['1y', '1 an'], ['all', 'Tout']].forEach(function (r) {
+      var b = el('button', 'range-btn' + (PROG_RANGE === r[0] ? ' active' : '')); b.textContent = r[1];
+      b.onclick = function () { PROG_RANGE = r[0]; onPick(); };
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
+
+  function viewProgression(main) {
+    main.appendChild(el('h1', 'display screen-title', 'Progression'));
+    main.appendChild(el('p', 'lede small', 'Chaque graphique répond à une seule question, à partir de tes vraies données. Rien n\'est inventé.'));
+    var menu = el('div', 'menu-list');
+    var nMeas = A.getBodyMeasurements().length;
+    var nEx = A.getExercises().filter(function (e) { return ProgressionEngine.exerciseHasData(e.id, A.getSessions()); }).length;
+    var nCardio = A.getCardioSessions().length;
+    menu.appendChild(menuItem('◔', 'Corps', nMeas ? (nMeas + ' mesure(s) enregistrée(s)') : 'Aucune mesure', function () { progBody(main); }));
+    menu.appendChild(menuItem('▤', 'Musculation', nEx ? (nEx + ' exercice(s) avec historique') : 'Aucun exercice avec série', function () { progMuscu(main); }));
+    menu.appendChild(menuItem('❤', 'Cardio', nCardio ? (nCardio + ' activité(s) enregistrée(s)') : 'Aucun cardio', function () { progCardio(main); }));
+    main.appendChild(menu);
+    main.appendChild(el('p', 'prog-foot', 'Régularité : à venir dans une prochaine étape.'));
+  }
+
+  function progBody(main) {
+    clear(main);
+    var back = el('button', 'back', '‹ Progression'); back.onclick = function () { renderApp('progression'); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', 'Corps'));
+    var meas = A.getBodyMeasurements();
+    var metrics = Object.keys(ProgressionEngine.BODY_META).filter(function (k) {
+      return ProgressionEngine.bodySeries({ measurements: meas, metric: k, range: 'all' }).points.length > 0;
+    });
+    if (!metrics.length) { main.appendChild(el('p', 'empty', 'Aucune mesure enregistrée.')); return; }
+    var list = el('div', 'list');
+    metrics.forEach(function (k) {
+      var meta = ProgressionEngine.BODY_META[k];
+      var b = el('button', 'list-item');
+      var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', meta.label)); b.appendChild(left);
+      b.appendChild(el('span', 'menu-chev', '›'));
+      b.onclick = function () { progBodyDetail(main, k); };
+      list.appendChild(b);
+    });
+    main.appendChild(list);
+  }
+  function progBodyDetail(main, metric) {
+    clear(main);
+    var back = el('button', 'back', '‹ Corps'); back.onclick = function () { progBody(main); }; main.appendChild(back);
+    var meta = ProgressionEngine.BODY_META[metric];
+    main.appendChild(el('h1', 'display screen-title', meta.label));
+    if (meta.estimated) main.appendChild(el('p', 'prog-note', 'Estimation fournie par l\'appareil.'));
+    main.appendChild(rangeSelector(function () { progBodyDetail(main, metric); }));
+    svgChart(ProgressionEngine.bodySeries({ measurements: A.getBodyMeasurements(), metric: metric, range: PROG_RANGE }), main);
+  }
+
+  function progMuscu(main) {
+    clear(main);
+    var back = el('button', 'back', '‹ Progression'); back.onclick = function () { renderApp('progression'); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', 'Musculation'));
+    var sessions = A.getSessions();
+    var exs = A.getExercises().filter(function (e) { return ProgressionEngine.exerciseHasData(e.id, sessions); });
+    if (!exs.length) { main.appendChild(el('p', 'empty', 'Aucun exercice avec au moins une série réalisée.')); return; }
+    var search = el('input', 'text-input'); search.type = 'text'; search.placeholder = 'Rechercher un exercice…'; main.appendChild(search);
+    var listWrap = el('div'); main.appendChild(listWrap);
+    function norm(s) { return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+    function render() {
+      clear(listWrap); var q = norm(search.value);
+      var list = el('div', 'list');
+      exs.filter(function (e) { return !q || norm(e.name).indexOf(q) >= 0; }).forEach(function (e) {
+        var rec = ProgressionEngine.exerciseRecords(e.id, sessions);
+        var b = el('button', 'list-item');
+        var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', e.name));
+        if (rec.heaviestCharge) left.appendChild(el('div', 'li-sub', 'Record : ' + rec.heaviestCharge.charge + ' kg × ' + rec.heaviestCharge.reps));
+        b.appendChild(left); b.appendChild(el('span', 'menu-chev', '›'));
+        b.onclick = function () { progExerciseDetail(main, e.id); };
+        list.appendChild(b);
+      });
+      listWrap.appendChild(list);
+    }
+    search.oninput = render; render();
+  }
+  function progExerciseDetail(main, exId) {
+    clear(main);
+    var back = el('button', 'back', '‹ Musculation'); back.onclick = function () { progMuscu(main); }; main.appendChild(back);
+    var ex = A.getExercises().filter(function (e) { return e.id === exId; })[0] || { name: 'Exercice' };
+    main.appendChild(el('h1', 'display screen-title', ex.name));
+    var sessions = A.getSessions();
+    var rec = ProgressionEngine.exerciseRecords(exId, sessions);
+    if (rec.heaviestCharge) {
+      var recCard = el('div', 'prog-records');
+      recCard.appendChild(el('div', 'prog-rec', 'Charge max : ' + rec.heaviestCharge.charge + ' kg × ' + rec.heaviestCharge.reps));
+      if (rec.mostReps) recCard.appendChild(el('div', 'prog-rec', 'Plus de reps : ' + rec.mostReps.reps + (rec.mostReps.charge != null ? ' @ ' + rec.mostReps.charge + ' kg' : '')));
+      if (rec.bestSessionVolume) recCard.appendChild(el('div', 'prog-rec', 'Meilleur volume : ' + fmtNum(rec.bestSessionVolume.volume) + ' kg'));
+      main.appendChild(recCard);
+    }
+    var sel = el('div', 'metric-row');
+    [['maxLoad', 'Charge'], ['repsAtCharge', 'Répétitions'], ['volume', 'Volume']].forEach(function (m) {
+      var b = el('button', 'metric-btn' + (PROG_EX_METRIC === m[0] ? ' active' : '')); b.textContent = m[1];
+      b.onclick = function () { PROG_EX_METRIC = m[0]; progExerciseDetail(main, exId); };
+      sel.appendChild(b);
+    });
+    main.appendChild(sel);
+    main.appendChild(rangeSelector(function () { progExerciseDetail(main, exId); }));
+    if (PROG_EX_METRIC === 'repsAtCharge') {
+      var charges = ProgressionEngine.chargesUsed(exId, sessions);
+      if (!charges.length) { main.appendChild(el('p', 'empty', 'Aucune charge enregistrée.')); return; }
+      if (PROG_CHARGE == null || charges.indexOf(PROG_CHARGE) < 0) PROG_CHARGE = charges[charges.length - 1];
+      var cRow = el('div', 'charge-row'); cRow.appendChild(el('span', 'charge-lab', 'Charge :'));
+      charges.forEach(function (c) { var b = el('button', 'charge-btn' + (PROG_CHARGE === c ? ' active' : '')); b.textContent = c + ' kg'; b.onclick = function () { PROG_CHARGE = c; progExerciseDetail(main, exId); }; cRow.appendChild(b); });
+      main.appendChild(cRow);
+      svgChart(ProgressionEngine.exerciseSeries({ exerciseId: exId, workoutSessions: sessions, metric: 'repsAtCharge', charge: PROG_CHARGE, range: PROG_RANGE }), main);
+    } else {
+      svgChart(ProgressionEngine.exerciseSeries({ exerciseId: exId, workoutSessions: sessions, metric: PROG_EX_METRIC, range: PROG_RANGE }), main);
+    }
+  }
+
+  function progCardio(main) {
+    clear(main);
+    var back = el('button', 'back', '‹ Progression'); back.onclick = function () { renderApp('progression'); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', 'Cardio'));
+    var cs = A.getCardioSessions();
+    if (!cs.length) { main.appendChild(el('p', 'empty', 'Aucun cardio enregistré.')); return; }
+    var types = {}; cs.forEach(function (c) { if (c.type) types[c.type] = true; });
+    var list = el('div', 'list');
+    Object.keys(types).forEach(function (t) {
+      var b = el('button', 'list-item');
+      var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', CARDIO_LABELS[t] || t)); b.appendChild(left);
+      b.appendChild(el('span', 'menu-chev', '›'));
+      b.onclick = function () { progCardioDetail(main, t); };
+      list.appendChild(b);
+    });
+    main.appendChild(list);
+  }
+  function progCardioDetail(main, type) {
+    clear(main);
+    var back = el('button', 'back', '‹ Cardio'); back.onclick = function () { progCardio(main); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', CARDIO_LABELS[type] || type));
+    var sel = el('div', 'metric-row');
+    [['duration', 'Durée'], ['distance', 'Distance']].forEach(function (m) {
+      var b = el('button', 'metric-btn' + (PROG_CARDIO_METRIC === m[0] ? ' active' : '')); b.textContent = m[1];
+      b.onclick = function () { PROG_CARDIO_METRIC = m[0]; progCardioDetail(main, type); };
+      sel.appendChild(b);
+    });
+    main.appendChild(sel);
+    main.appendChild(rangeSelector(function () { progCardioDetail(main, type); }));
+    svgChart(ProgressionEngine.cardioSeries({ cardioSessions: A.getCardioSessions(), cardioType: type, metric: PROG_CARDIO_METRIC, range: PROG_RANGE }), main);
+  }
+
+  // ═══ Programmes prêts à installer + bibliothèque structurée (édition test) ═══
+  function ensureLibraryExercise(libId) {
+    var def = HexisLibrary.byId(libId); if (!def) return null;
+    var all = A.getExercises();
+    // 1) déjà relié par libId ?
+    var found = all.filter(function (e) { return e.libId === libId; })[0];
+    // 2) sinon, un exercice perso qui résout vers CETTE entrée (même nom/alias) -> on le relie
+    if (!found) {
+      found = all.filter(function (e) { var r = HexisLibrary.resolve(e.name); return r && r.id === libId; })[0];
+      if (found && !found.libId) { found.libId = libId; A.saveExercise(found); }
+    }
+    if (found) return found;
+    var ex = A.createExercise(def.name, null);
+    ex.libId = def.id; ex.category = def.category; ex.exerciseType = def.exerciseType;
+    ex.aliases = (ex.aliases || []).concat(def.aliases);
+    ex.musclesPrimary = def.musclesPrimary; ex.musclesSecondary = def.musclesSecondary;
+    ex.movementPattern = def.movementPattern; ex.equipment = def.equipment; ex.unilateral = def.unilateral;
+    ex.defaults = { setsTarget: 3, repsTarget: def.defaultRepRange ? (def.defaultRepRange.min + '-' + def.defaultRepRange.max) : null, restSeconds: def.defaultRestSeconds };
+    A.saveExercise(ex); return ex;
+  }
+
+  function viewProgrammes(main) {
+    clear(main);
+    var back = el('button', 'back', '‹ Séance'); back.onclick = function () { renderApp('seance'); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', 'Programmes'));
+    main.appendChild(el('p', 'lede small', 'Des programmes prêts à installer. Installer crée une copie que tu peux modifier ; ça ne change pas tes séances existantes.'));
+    var assist = el('button', 'btn primary', 'Trouver mon programme'); assist.onclick = function () { programAssistant(main, {}); }; main.appendChild(assist);
+    var list = el('div', 'list');
+    HexisLibrary.PROGRAMS.forEach(function (p) {
+      var b = el('button', 'list-item');
+      var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', p.name)); left.appendChild(el('div', 'li-sub', p.daysPerWeek + ' jours/sem · ' + p.templates.length + ' séance(s)')); b.appendChild(left);
+      b.appendChild(el('span', 'menu-chev', '›'));
+      b.onclick = function () { programPreview(main, p.id); };
+      list.appendChild(b);
+    });
+    main.appendChild(list);
+  }
+
+  var ASSIST = {};
+  function programAssistant(main, state) {
+    ASSIST = state || {};
+    clear(main);
+    var back = el('button', 'back', '‹ Programmes'); back.onclick = function () { viewProgrammes(main); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', 'Trouver mon programme'));
+    function q(title, key, options) {
+      var card = el('section', 'card');
+      card.appendChild(el('div', 'card-eyebrow', title));
+      options.forEach(function (o) {
+        var b = el('button', 'btn ghost' + (ASSIST[key] === o[1] ? ' active-choice' : '')); b.textContent = o[0];
+        b.onclick = function () { ASSIST[key] = o[1]; programAssistant(main, ASSIST); };
+        card.appendChild(b);
+      });
+      main.appendChild(card);
+    }
+    q('Ton expérience', 'experience', [['Je débute ou je reprends', 'beginner_restart'], ['Moins d\'un an', 'under_1y'], ['Plus d\'un an', 'over_1y'], ['Je veux créer moi-même', 'create']]);
+    var qc = el('section', 'card');
+    qc.appendChild(el('div', 'card-eyebrow', 'Combien de séances de musculation par semaine ?'));
+    qc.appendChild(el('p', 'li-sub', 'Ne compte pas le cardio, la marche ni les jours de récupération.'));
+    [['2 séances', 2], ['3 séances', 3], ['4 séances', 4], ['5 séances ou plus', 5]].forEach(function (o) {
+      var b = el('button', 'btn ghost' + (ASSIST.daysPerWeek === o[1] ? ' active-choice' : '')); b.textContent = o[0];
+      b.onclick = function () { ASSIST.daysPerWeek = o[1]; programAssistant(main, ASSIST); };
+      qc.appendChild(b);
+    });
+    main.appendChild(qc);
+    if (ASSIST.experience) {
+      var rec = HexisLibrary.planProgram(ASSIST);
+      var res = el('section', 'card');
+      if (rec) {
+        var p = HexisLibrary.programById(rec);
+        res.appendChild(el('div', 'prog-question', 'Programme conseillé : ' + p.name));
+        res.appendChild(el('p', 'li-sub', p.description));
+        var go = el('button', 'btn primary', 'Voir ce programme'); go.onclick = function () { programPreview(main, rec); }; res.appendChild(go);
+      } else {
+        res.appendChild(el('p', 'lede small', 'Tu préfères créer toi-même : va dans « Mes modèles » pour composer ta séance.'));
+      }
+      main.appendChild(res);
+    }
+  }
+
+  function programPreview(main, programId) {
+    var p = HexisLibrary.programById(programId); if (!p) return viewProgrammes(main);
+    clear(main);
+    var back = el('button', 'back', '‹ Programmes'); back.onclick = function () { viewProgrammes(main); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', p.name));
+    main.appendChild(el('p', 'lede small', p.daysPerWeek + ' jours/semaine — ' + p.description));
+    if (p.customizable) main.appendChild(el('p', 'prog-note', 'Base à personnaliser — destinée aux personnes déjà autonomes.'));
+    p.templates.forEach(function (t) {
+      var card = el('section', 'card');
+      card.appendChild(el('div', 'card-eyebrow', t.name + ' · ' + t.items.length + ' exercices'));
+      t.items.forEach(function (item) {
+        var def = HexisLibrary.byId(item.ref);
+        card.appendChild(el('div', 'prog-val-row', def.name + ' — ' + item.sets + '×' + item.repMin + '-' + item.repMax + ', repos ' + item.rest + 's'));
+      });
+      main.appendChild(card);
+    });
+    var install = el('button', 'btn primary', 'Installer ce programme');
+    install.onclick = function () {
+      askConfirm('Installer « ' + p.name + ' » ? Une copie modifiable sera créée dans tes modèles (aucune charge imposée, tes séances actuelles ne changent pas).', function () {
+        try { var res = HexisLibrary.installProgram(A, programId); toast(res.templatesCreated + ' séance(s) ajoutée(s)'); viewModeles(main); }
+        catch (e) { toast('Installation impossible'); }
+      }, { yesLabel: 'Installer' });
+    };
+    main.appendChild(install);
+  }
+
+  // Autocomplétion branchée sur la bibliothèque structurée (utilisée par le sélecteur)
+  function libraryAutocomplete(query) {
+    if (!PROGRAMS_ON) return [];
+    return HexisLibrary.searchExercises(query, { limit: 8 });
+  }
+
+  // ═══ Saisie groupée des mensurations (édition test) ═══
+  var MEAS_FIELDS = [
+    { key: 'weightKg', label: 'Poids', short: 'Poids', unit: ' kg' },
+    { key: 'abdomenAtNavelCm', label: 'Ventre au nombril', short: 'Ventre', unit: ' cm' },
+    { key: 'chestCm', label: 'Poitrine', short: 'Poitrine', unit: ' cm' },
+    { key: 'relaxedArmRightCm', label: 'Bras droit', short: 'Bras D', unit: ' cm' },
+    { key: 'relaxedArmLeftCm', label: 'Bras gauche', short: 'Bras G', unit: ' cm' },
+    { key: 'forearmRightCm', label: 'Avant-bras droit', short: 'Av-bras D', unit: ' cm' },
+    { key: 'forearmLeftCm', label: 'Avant-bras gauche', short: 'Av-bras G', unit: ' cm' },
+    { key: 'thighRightCm', label: 'Cuisse droite', short: 'Cuisse D', unit: ' cm' },
+    { key: 'thighLeftCm', label: 'Cuisse gauche', short: 'Cuisse G', unit: ' cm' },
+    { key: 'hipsCm', label: 'Hanches', short: 'Hanches', unit: ' cm' },
+    { key: 'calfRightCm', label: 'Mollet droit', short: 'Mollet D', unit: ' cm' },
+    { key: 'calfLeftCm', label: 'Mollet gauche', short: 'Mollet G', unit: ' cm' },
+    { key: 'shouldersCm', label: 'Épaules', short: 'Épaules', unit: ' cm' },
+    { key: 'neckCm', label: 'Cou', short: 'Cou', unit: ' cm' },
+    { key: 'bodyFatPercent', label: 'Masse grasse estimée', short: 'MG', unit: ' %' },
+    { key: 'muscleMassKg', label: 'Masse musculaire estimée', short: 'MM', unit: ' kg' }
+  ];
+  function fmtMeasVal(v) { return (Math.round(v * 100) / 100).toString().replace('.', ','); }
+
+  function viewNewMeasurement(existingId) {
+    var main = document.getElementById('main'); clear(main);
+    var existing = existingId ? A.getBodyMeasurements().filter(function (m) { return m.id === existingId; })[0] : null;
+    var back = el('button', 'back', existing ? '‹ Historique' : '‹ Accueil');
+    back.onclick = function () { renderApp(existing ? 'historique' : 'accueil'); }; main.appendChild(back);
+    main.appendChild(el('h1', 'display screen-title', existing ? 'Modifier la mesure' : 'Nouvelle mesure corporelle'));
+    main.appendChild(el('p', 'lede small', 'Remplis seulement ce que tu as mesuré. Les champs vides ne sont pas enregistrés.'));
+
+    var dateCard = el('section', 'card');
+    dateCard.appendChild(el('div', 'card-eyebrow', 'Date'));
+    var dateI = el('input', 'text-input'); dateI.type = 'date'; dateI.value = existing ? existing.date : todayISO();
+    dateCard.appendChild(dateI); main.appendChild(dateCard);
+
+    var form = el('section', 'card');
+    var grid = el('div', 'meas-grid');
+    var inputs = {};
+    MEAS_FIELDS.forEach(function (f) {
+      var cell = el('label', 'meas-cell');
+      cell.appendChild(el('span', 'meas-label', f.label + f.unit));
+      var inp = el('input', 'text-input small-input'); inp.type = 'number'; inp.inputMode = 'decimal'; inp.placeholder = f.unit.trim();
+      // compat : ancien waistCm relu comme ventre au nombril, sans réécrire la donnée
+      var cur = existing && existing.values ? (existing.values[f.key] != null ? existing.values[f.key] : (f.key === 'abdomenAtNavelCm' ? existing.values.waistCm : null)) : null;
+      if (cur != null) inp.value = cur;
+      inputs[f.key] = inp; cell.appendChild(inp); grid.appendChild(cell);
+    });
+    form.appendChild(grid);
+    var noteI = el('input', 'text-input'); noteI.type = 'text'; noteI.placeholder = 'Note (facultatif)'; noteI.value = existing && existing.note ? existing.note : '';
+    form.appendChild(noteI);
+    main.appendChild(form);
+
+    var save = el('button', 'btn primary wide', 'Enregistrer les mesures');
+    save.onclick = function () {
+      var values = {};
+      MEAS_FIELDS.forEach(function (f) {
+        var raw = inputs[f.key].value;
+        if (raw === '' || raw == null) return;              // vide -> absent (jamais 0)
+        var n = Number(raw);
+        if (isFinite(n)) values[f.key] = n;                 // seule une valeur réelle est conservée
+      });
+      if (Object.keys(values).length === 0) { toast('Saisis au moins une mesure'); return; }
+      var obj = { date: dateI.value || todayISO(), values: values, note: noteI.value || null, source: 'user' };
+      if (existing) { obj.id = existing.id; obj.createdAt = existing.createdAt; }
+      A.saveBodyMeasurement(obj);
+      toast(existing ? 'Mesure modifiée' : 'Mesures enregistrées');
+      renderApp(existing ? 'historique' : 'accueil');
+    };
+    main.appendChild(save);
+
+    if (existing) {
+      var del = el('button', 'btn ghost danger wide', 'Supprimer cette fiche');
+      del.onclick = function () { askConfirm('Supprimer cette fiche de mesures ?', function () { A.deleteBodyMeasurement(existing.id); toast('Fiche supprimée'); renderApp('historique'); }, { danger: true, yesLabel: 'Supprimer' }); };
+      main.appendChild(del);
+    }
+  }
 
   function startDraftFromTemplate(t) {
     var exById = {}; A.getExercises().forEach(function (e) { exById[e.id] = e; });
@@ -1970,7 +3084,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
       for (var i = 0; i < nSets; i++) sets.push({ charge: charge, reps: null, restSeconds: null });
       return { exerciseId: it.exerciseId, name: ex ? ex.name : 'Exercice', prescriptionSnapshot: Object.assign({}, it.prescription), sets: sets };
     });
-    A.saveDraft({ type: t.name, templateId: t.id, date: todayISO(), startedAt: new Date().toISOString(), entries: entries });
+    A.saveDraft({ type: t.name, templateId: t.id, templateName: t.name, installedFrom: t.installedFrom || null, date: todayISO(), startedAt: new Date().toISOString(), entries: entries });
   }
 
   // -- Écran de saisie de la séance en cours --------------------------
@@ -2078,7 +3192,22 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var unit = field === 'charge' ? ' kg' : (field === 'restSeconds' ? ' s' : '');
     var msg = 'Appliquer ' + v + unit + ' de ' + label + ' à toutes les séries ?';
     function applyAll() { en.sets.forEach(function (s) { s[field] = v; }); var d = A.getDraft(); A.saveDraft(d); renderApp('seance'); }
+    // Édition test : bandeau intégré DANS la carte de l'exercice, juste sous la série modifiée.
+    if (V16_UX && card && row) { showApplyInline(card, row, msg, applyAll); return; }
     showApplyPrompt(msg, applyAll);     // quotidienne : comportement d'origine
+  }
+  function showApplyInline(card, row, msg, onAll) {
+    // retirer un éventuel bandeau inline déjà présent dans la carte
+    (card.children || []).slice().forEach(function (c) { if (c.className && (' ' + c.className + ' ').indexOf(' apply-inline ') >= 0) c.remove(); });
+    var bar = el('div', 'apply-inline');
+    bar.appendChild(el('div', 'ap-msg', msg));
+    var btns = el('div', 'ap-btns');
+    var yes = el('button', 'ap-yes', 'Appliquer à toutes'); yes.onclick = function () { bar.remove(); onAll(); };
+    var no = el('button', 'ap-no', 'Seulement cette série'); no.onclick = function () { bar.remove(); };
+    btns.appendChild(yes); btns.appendChild(no); bar.appendChild(btns);
+    // insérer juste après la série modifiée si possible, sinon à la fin de la carte
+    if (typeof card.insertBefore === 'function' && row && row.nextSibling) { try { card.insertBefore(bar, row.nextSibling); return; } catch (e) {} }
+    card.appendChild(bar);
   }
   function showApplyPrompt(msg, onAll) {
     var old = document.getElementById('apply-prompt'); if (old) old.remove();
@@ -2116,6 +3245,13 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
           sets: en.sets.filter(realSet).map(function (s) { return { charge: s.charge, reps: s.reps, restSeconds: s.restSeconds != null ? s.restSeconds : null, unverified: false }; }) };
       }).filter(function (en) { return en.sets.length; })   // un exercice sans série réellement faite est écarté
     };
+    // Snapshot du nom du modèle au moment de l'enregistrement (édition test).
+    // Figé : renommer le modèle plus tard ne change pas l'historique.
+    if (V16_UX && draft.templateId) {
+      var srcT = A.getTemplates().filter(function (x) { return x.id === draft.templateId; })[0];
+      session.templateName = (srcT && srcT.name) || draft.templateName || null;
+      session.installedFrom = (srcT && srcT.installedFrom) || draft.installedFrom || null;
+    }
     // charge de départ mise à jour UNIQUEMENT depuis une série réellement effectuée
     draft.entries.forEach(function (en) {
       var lastCharge = null; en.sets.forEach(function (s) { if (realSet(s) && s.charge != null) lastCharge = s.charge; });
