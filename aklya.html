@@ -286,6 +286,9 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
 .treadmill-card{border-color:#bcd6cf}
 .treadmill-card .card-eyebrow{margin-top:8px}
 .treadmill-card .field-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.card-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:2px}
+.card-actions .link-btn{margin:0}
+.link-btn.danger{color:#c0392b}
 .list-item.picked{border-color:var(--deep);background:#f0f5f3}
 .day-todo{font-size:.6rem;color:var(--deep-2);font-weight:600;margin-top:1px}
 .version-line{text-align:center;font-size:.75rem;color:var(--graphite);margin-top:22px;opacity:.7}
@@ -1565,7 +1568,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   var PROGRAMS_ON = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.showPrograms) && (typeof HexisLibrary !== 'undefined');
   var V16_UX = PROGRESSION_ON || PROGRAMS_ON;   // corrections d'usage v1.6, édition test uniquement
   var IS_BETA = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.beta);   // édition bêta publique (vierge, partageable)
-  var APP_VERSION = IS_BETA ? '1.6.0 bêta' : ((window.CARNET_CONFIG && window.CARNET_CONFIG.versionLabel) || ((PROGRAMS_ON || PROGRESSION_ON) ? '1.6.0-test' : '1.5.1'));
+  var APP_VERSION = IS_BETA ? '1.6.1 bêta' : ((window.CARNET_CONFIG && window.CARNET_CONFIG.versionLabel) || ((PROGRAMS_ON || PROGRESSION_ON) ? '1.6.0-test' : '1.5.1'));
   var USER = 'toi';
   function loadUser() { try { var s = A.getSettings(); if (s && s.userName) USER = s.userName; } catch (e) {} }
 
@@ -2041,12 +2044,14 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
         var del = el('button', 'set-del', '×'); del.onclick = function () { en.sets.splice(si, 1); sessionEditFrom(id, working); };
         row.appendChild(del); card.appendChild(row);
       });
+      var actions = el('div', 'card-actions');
       var addSet = el('button', 'link-btn', '+ série');
       addSet.onclick = function () { var last = en.sets[en.sets.length - 1] || {}; en.sets.push({ charge: last.charge != null ? last.charge : null, reps: null, restSeconds: last.restSeconds != null ? last.restSeconds : null }); sessionEditFrom(id, working); };
-      card.appendChild(addSet);
-      var delEx = el('button', 'link-btn danger', 'Supprimer l\'exercice');
+      actions.appendChild(addSet);
+      var delEx = el('button', 'link-btn danger', 'Supprimer');
       delEx.onclick = function () { askConfirm('Supprimer entièrement « ' + (ex ? ex.name : (en.name || 'cet exercice')) + ' » de la séance ?', function () { working.entries.splice(exIdx, 1); sessionEditFrom(id, working); }, { danger: true, yesLabel: 'Supprimer' }); };
-      card.appendChild(delEx);
+      actions.appendChild(delEx);
+      card.appendChild(actions);
       main.appendChild(card);
     });
     // ajouter un exercice oublié
@@ -3385,13 +3390,15 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
         }
         card.appendChild(row);
       });
+      var actionsS = V16_UX ? el('div', 'card-actions') : card;
       var addSet = el('button', 'link-btn', '+ série');
       addSet.onclick = function () { var last = en.sets[en.sets.length - 1] || {}; en.sets.push({ charge: last.charge != null ? last.charge : null, reps: null, restSeconds: last.restSeconds != null ? last.restSeconds : null }); A.saveDraft(draft); renderApp('seance'); };
-      card.appendChild(addSet);
+      actionsS.appendChild(addSet);
       if (V16_UX) {
-        var delEx2 = el('button', 'link-btn danger', 'Supprimer l\'exercice');
+        var delEx2 = el('button', 'link-btn danger', 'Supprimer');
         delEx2.onclick = function () { askConfirm('Supprimer entièrement « ' + (en.name || 'cet exercice') + ' » de la séance ?', function () { draft.entries.splice(ei, 1); A.saveDraft(draft); renderApp('seance'); }, { danger: true, yesLabel: 'Supprimer' }); };
-        card.appendChild(delEx2);
+        actionsS.appendChild(delEx2);
+        card.appendChild(actionsS);
       }
       main.appendChild(card);
     });
