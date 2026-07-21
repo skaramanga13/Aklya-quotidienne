@@ -289,6 +289,8 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
 .card-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:2px}
 .card-actions .link-btn{margin:0}
 .link-btn.danger{color:#c0392b}
+.rest-auto{display:flex;align-items:center;gap:8px;margin-top:10px;padding-top:8px;border-top:1px solid var(--hair)}
+.rest-auto-lbl{font-size:.82rem;color:var(--graphite);line-height:1.2}
 .list-item.picked{border-color:var(--deep);background:#f0f5f3}
 .day-todo{font-size:.6rem;color:var(--deep-2);font-weight:600;margin-top:1px}
 .version-line{text-align:center;font-size:.75rem;color:var(--graphite);margin-top:22px;opacity:.7}
@@ -322,7 +324,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
 </head>
 <body>
 <div id="app"></div>
-<script>window.CARNET_CONFIG={"appName":"AKLYA","namespace":"","showProgression":true,"showPrograms":true,"versionLabel":"1.6.1"};</script>
+<script>window.CARNET_CONFIG={"appName":"AKLYA","namespace":"","showProgression":true,"showPrograms":true,"versionLabel":"1.6.2"};</script>
 <script>
 /* ============================================================
  * ProgressionEngine — moteur de progression PUR (aucun DOM)
@@ -1440,6 +1442,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     function exerciseUsedIn(id) { return ds().workoutTemplates.filter(function (t) { return (t.items || []).some(function (it) { return it.exerciseId === id; }); }).map(function (t) { return t.name; }); }
     // --- Prénom / réglages ------------------------------------------
     function setUserName(name) { const d = ds(); d.settings = d.settings || {}; d.settings.userName = name; persistActive(); return name; }
+    function setSetting(key, value) { const d = ds(); d.settings = d.settings || {}; d.settings[key] = value; persistActive(); return value; }
     // --- Création d'exercice (bibliothèque) -------------------------
     function createExercise(name, startingCharge, objective) {
       const d = ds();
@@ -1540,7 +1543,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
       pushBackup: function (r) { return pushBackup(r, loadActive()); }, listBackups: listBackups, restoreBackup: restoreBackup,
       getExercises: getExercises, getTemplates: getTemplates, getSessions: getSessions, getPlannedEvents: getPlannedEvents,
       getBodyMeasurements: getBodyMeasurements, getCardioSessions: getCardioSessions, getWeeklyReviews: getWeeklyReviews,
-      getMigrationReviewItems: getMigrationReviewItems, getMigrationLog: getMigrationLog, getMeta: getMeta, getSettings: getSettings,
+      getMigrationReviewItems: getMigrationReviewItems, getMigrationLog: getMigrationLog, getMeta: getMeta, getSettings: getSettings, setSetting: setSetting,
       saveWorkoutSession: saveWorkoutSession, saveBodyMeasurement: saveBodyMeasurement, deleteBodyMeasurement: deleteBodyMeasurement, saveCardioSession: saveCardioSession, saveExercise: saveExercise,
       savePlannedEvent: savePlannedEvent, deleteCardioSession: deleteCardioSession, deletePlannedEvent: deletePlannedEvent, setAppVersion: setAppVersion,
       deleteTemplate: deleteTemplate, deleteExercise: deleteExercise, exerciseUsedIn: exerciseUsedIn,
@@ -1568,7 +1571,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   var PROGRAMS_ON = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.showPrograms) && (typeof HexisLibrary !== 'undefined');
   var V16_UX = PROGRESSION_ON || PROGRAMS_ON;   // corrections d'usage v1.6, édition test uniquement
   var IS_BETA = !!(window.CARNET_CONFIG && window.CARNET_CONFIG.beta);   // édition bêta publique (vierge, partageable)
-  var APP_VERSION = IS_BETA ? '1.6.1 bêta' : ((window.CARNET_CONFIG && window.CARNET_CONFIG.versionLabel) || ((PROGRAMS_ON || PROGRESSION_ON) ? '1.6.0-test' : '1.5.1'));
+  var APP_VERSION = IS_BETA ? '1.6.2 bêta' : ((window.CARNET_CONFIG && window.CARNET_CONFIG.versionLabel) || ((PROGRAMS_ON || PROGRESSION_ON) ? '1.6.0-test' : '1.5.1'));
   var USER = 'toi';
   function loadUser() { try { var s = A.getSettings(); if (s && s.userName) USER = s.userName; } catch (e) {} }
 
@@ -1585,6 +1588,17 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var shown = (typeof v === 'number') ? v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) : String(v);
     s.textContent = (unit ? (shown + '\u2009' + unit) : shown); return s;
   }
+  // Parse une saisie numérique en acceptant la virgule OU le point. Décimales préservées (jamais d'arrondi entier).
+  // decimal=true -> nombre à virgule (charges) ; decimal=false -> entier (répétitions, secondes).
+  function parseNum(raw, decimal) {
+    if (raw == null) return null;
+    var s = String(raw).trim().replace(/\s/g, '').replace(',', '.');
+    if (s === '' || s === '.' || s === '-') return null;
+    var v = decimal ? parseFloat(s) : parseInt(s, 10);
+    return isFinite(v) ? v : null;
+  }
+  // Affiche une charge en français (virgule), sans forcer d'entier. Ex : 32.5 -> "32,5".
+  function fmtKg(v) { return (v == null || (typeof v === 'number' && !isFinite(v))) ? '—' : (typeof v === 'number' ? v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) : String(v)); }
   function fmtDate(iso) {
     if (!iso) return '—';
     try { var d = new Date(iso + (iso.length === 10 ? 'T00:00:00' : '')); return d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }); } catch (e) { return iso; }
@@ -1863,7 +1877,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var tI = el('input', 'text-input small-input'); tI.type = 'number'; tI.inputMode = 'decimal'; tI.placeholder = 'Tour de taille cm';
     var mB = el('button', 'btn small', 'Enregistrer');
     mB.onclick = function () {
-      var w = wI.value === '' ? null : Number(wI.value); var t = tI.value === '' ? null : Number(tI.value);
+      var w = parseNum(wI.value, true); var t = parseNum(tI.value, true);
       if (w == null && t == null) { toast('Saisis au moins une valeur'); return; }
       A.saveBodyMeasurement({ date: todayISO(), values: { weightKg: w, waistCm: t }, note: '', source: 'user' });
       toast('Mesure enregistrée'); renderApp('accueil');
@@ -2059,7 +2073,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     addWrap.appendChild(el('div', 'card-eyebrow', 'Ajouter un exercice oublié'));
     var nameI = el('input', 'text-input'); nameI.type = 'text'; nameI.placeholder = 'Nom de l\'exercice'; nameI.value = working.__newName || '';
     nameI.onchange = function () { working.__newName = nameI.value; };
-    var chargeI = el('input', 'text-input small-input'); chargeI.type = 'number'; chargeI.inputMode = 'decimal'; chargeI.placeholder = 'Charge kg (optionnel)'; chargeI.value = working.__newCharge || '';
+    var chargeI = el('input', 'text-input small-input'); chargeI.type = 'text'; chargeI.inputMode = 'decimal'; chargeI.placeholder = 'Charge kg (optionnel)'; chargeI.value = working.__newCharge || '';
     chargeI.onchange = function () { working.__newCharge = chargeI.value; };
     var addB = el('button', 'btn small', '+ Ajouter à la séance');
     addB.onclick = function () { working.__newName = nameI.value; working.__newCharge = chargeI.value; addExerciseToEdit(id, working); };
@@ -2077,7 +2091,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   // ajoute un exercice oublié à la séance en cours de modification
   function addExerciseToEdit(id, working) {
     var name = (working.__newName || '').trim(); if (!name) { toast('Donne un nom à l\'exercice'); return; }
-    var charge = working.__newCharge != null && working.__newCharge !== '' ? Number(working.__newCharge) : null;
+    var charge = parseNum(working.__newCharge, true);
     // réutilise un exercice existant de la bibliothèque si le nom correspond, sinon le crée
     var norm = window.CarnetMigration.normalizeName(name);
     var ex = A.getExercises().filter(function (e) { return e.normalizedName === norm; })[0];
@@ -2419,9 +2433,9 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   function field(label, val, type, onchange) {
     var wrap = el('div', 'field');
     wrap.appendChild(el('label', 'field-label', label));
-    var inp = el('input', 'text-input'); inp.type = type; if (type === 'number') inp.inputMode = 'decimal';
-    if (val != null) inp.value = val;
-    inp.onchange = function () { onchange(inp.value === '' ? null : (type === 'number' ? Number(inp.value) : inp.value)); };
+    var inp = el('input', 'text-input'); inp.type = (type === 'number') ? 'text' : type; if (type === 'number') inp.inputMode = 'decimal';
+    if (val != null) inp.value = (type === 'number' && typeof val === 'number') ? String(val).replace('.', ',') : val;
+    inp.onchange = function () { onchange(type === 'number' ? parseNum(inp.value, true) : (inp.value === '' ? null : inp.value)); };
     wrap.appendChild(inp); return wrap;
   }
   function saveCardio(dISO, draft, existing) {
@@ -2540,7 +2554,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
         var b = el('button', 'list-item');
         var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', ex.name));
         var d = ex.defaults || {}; var bits = [];
-        if (ex.startingLoad && ex.startingLoad.charge != null) bits.push(ex.startingLoad.charge + ' kg');
+        if (ex.startingLoad && ex.startingLoad.charge != null) bits.push(fmtKg(ex.startingLoad.charge) + ' kg');
         if (d.setsTarget) bits.push(d.setsTarget + '×' + (d.repsTarget || '—'));
         if (d.restSeconds != null) bits.push('récup ' + d.restSeconds + 's');
         left.appendChild(el('div', 'li-sub', bits.join(' · ') || 'à compléter')); b.appendChild(left);
@@ -2891,7 +2905,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
         var rec = ProgressionEngine.exerciseRecords(e.id, sessions);
         var b = el('button', 'list-item');
         var left = el('div', 'li-left'); left.appendChild(el('div', 'li-date', e.name));
-        if (rec.heaviestCharge) left.appendChild(el('div', 'li-sub', 'Record : ' + rec.heaviestCharge.charge + ' kg × ' + rec.heaviestCharge.reps));
+        if (rec.heaviestCharge) left.appendChild(el('div', 'li-sub', 'Record : ' + fmtKg(rec.heaviestCharge.charge) + ' kg × ' + rec.heaviestCharge.reps));
         b.appendChild(left); b.appendChild(el('span', 'menu-chev', '›'));
         b.onclick = function () { progExerciseDetail(main, e.id); };
         list.appendChild(b);
@@ -2909,8 +2923,8 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var rec = ProgressionEngine.exerciseRecords(exId, sessions);
     if (rec.heaviestCharge) {
       var recCard = el('div', 'prog-records');
-      recCard.appendChild(el('div', 'prog-rec', 'Charge max : ' + rec.heaviestCharge.charge + ' kg × ' + rec.heaviestCharge.reps));
-      if (rec.mostReps) recCard.appendChild(el('div', 'prog-rec', 'Plus de reps : ' + rec.mostReps.reps + (rec.mostReps.charge != null ? ' @ ' + rec.mostReps.charge + ' kg' : '')));
+      recCard.appendChild(el('div', 'prog-rec', 'Charge max : ' + fmtKg(rec.heaviestCharge.charge) + ' kg × ' + rec.heaviestCharge.reps));
+      if (rec.mostReps) recCard.appendChild(el('div', 'prog-rec', 'Plus de reps : ' + rec.mostReps.reps + (rec.mostReps.charge != null ? ' @ ' + fmtKg(rec.mostReps.charge) + ' kg' : '')));
       if (rec.bestSessionVolume) recCard.appendChild(el('div', 'prog-rec', 'Meilleur volume : ' + fmtNum(rec.bestSessionVolume.volume) + ' kg'));
       main.appendChild(recCard);
     }
@@ -3186,6 +3200,27 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   }
   function restPause() { REST.remainingAtPause = restRemaining(); REST.running = false; }
   function restReset() { REST.running = false; REST.remainingAtPause = null; REST.endsAt = null; REST.done = false; }
+  // Bloc D — chrono automatique après validation d'une série.
+  // Option persistante (défaut activée).
+  function autoRestOn() { try { var s = A.getSettings(); return s && s.autoRestOnSet === false ? false : true; } catch (e) { return true; } }
+  function setAutoRest(on) { try { A.setSetting('autoRestOnSet', !!on); } catch (e) {} }
+  // Repos réel de CETTE série / CET exercice (série > prescription > 90).
+  function restSecondsForSet(en, si) {
+    var st = en.sets && en.sets[si];
+    if (st && st.restSeconds != null) return st.restSeconds;
+    if (en.prescriptionSnapshot && en.prescriptionSnapshot.restSeconds != null) return en.prescriptionSnapshot.restSeconds;
+    return 90;
+  }
+  // Démarre (ou REMPLACE, jamais empile) le décompte pour l'exercice ei, durée du repos de la série si.
+  function autoStartRest(en, ei, si) {
+    var key = 't' + ei;
+    var secs = restSecondsForSet(en, si);
+    REST.openKey = key;            // rend le panneau visible sous l'exercice
+    REST.mode = 'down';
+    restSeed(key, secs);           // réinitialise total + endsAt/running/done -> pas d'empilement
+    restStart();                   // endsAt = now + secs (timestamp -> survit à l'arrière-plan)
+    restEnsureTick();              // un seul interval (garde interne REST._tick)
+  }
   function restAdjust(delta) { var base = REST.running ? restRemaining() : (REST.remainingAtPause != null ? REST.remainingAtPause : REST.total); base = Math.max(5, base + delta); if (REST.mode === 'down') REST.total = base; if (REST.running) REST.endsAt = Date.now() + base * 1000; else REST.remainingAtPause = base; }
   function restBeep() { try { var Ctx = window.AudioContext || window.webkitAudioContext; if (!Ctx) return; var ac = new Ctx(); var o = ac.createOscillator(), g = ac.createGain(); o.connect(g); g.connect(ac.destination); o.frequency.value = 880; g.gain.value = 0.12; o.start(); setTimeout(function () { o.stop(); ac.close && ac.close(); }, 350); } catch (e) {} }
   // Demande de permission notification (au démarrage d'un décompte). Best-effort : iOS Safari limite l'API.
@@ -3226,6 +3261,12 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var toUp = el('button', 'seg-mini' + (REST.mode === 'up' ? ' on' : ''), 'Libre');
     toUp.onclick = function () { if (REST.mode !== 'up') { REST.mode = 'up'; restReset(); REST.remainingAtPause = 0; } renderApp('seance'); };
     modeRow.appendChild(toDown); modeRow.appendChild(toUp); wrap.appendChild(modeRow);
+    var autoRow = el('label', 'rest-auto');
+    var acb = el('button', 'set-chk' + (autoRestOn() ? ' on' : ''), autoRestOn() ? '☑' : '☐');
+    acb.onclick = function () { setAutoRest(!autoRestOn()); renderApp('seance'); };
+    autoRow.appendChild(acb);
+    autoRow.appendChild(el('span', 'rest-auto-lbl', 'Démarrer le repos automatiquement après chaque série'));
+    wrap.appendChild(autoRow);
     return wrap;
   }
 
@@ -3236,7 +3277,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     wrap.appendChild(el('label', 'field-label', label));
     var inp = el('input', 'text-input'); inp.type = 'number'; inp.inputMode = 'decimal';
     if (val != null) inp.value = val;
-    inp.onchange = function () { onchange(inp.value === '' ? null : Number(inp.value)); A.saveDraft(A.getDraft()); };
+    inp.onchange = function () { onchange(parseNum(inp.value, true)); A.saveDraft(A.getDraft()); };
     wrap.appendChild(inp); return wrap;
   }
   function renderTreadmillCard(main, draft, en, ei) {
@@ -3381,9 +3422,13 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
           var chk = el('button', 'set-chk' + (st.done ? ' on' : ''), st.done ? '☑' : '☐');
           chk.setAttribute('aria-label', 'Valider la série ' + (si + 1));
           chk.onclick = function () {
+            var willCheck = !st.done;               // true = on coche (pas on décoche)
             st.done = !st.done; A.saveDraft(draft);
             // si toutes les séries sont cochées, proposer de terminer l'exercice
             if (st.done && en.sets.length && en.sets.every(function (s) { return s.done; }) && !en.done) { en.done = true; }
+            // Repos auto : seulement au COCHAGE d'une série NON dernière, option ON, exercice non terminé.
+            var isLast = (si === en.sets.length - 1);
+            if (willCheck && !isLast && !en.done && autoRestOn()) { autoStartRest(en, ei, si); }
             renderApp('seance');
           };
           row.appendChild(chk);
@@ -3412,7 +3457,7 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     var addWrap = el('section', 'card add-ex');
     addWrap.appendChild(el('div', 'card-eyebrow', 'Ajouter un exercice'));
     var nameI = el('input', 'text-input'); nameI.type = 'text'; nameI.placeholder = 'Nom de l\'exercice (ex. Développé couché)';
-    var chargeI = el('input', 'text-input small-input'); chargeI.type = 'number'; chargeI.inputMode = 'decimal'; chargeI.placeholder = 'Charge kg (optionnel)';
+    var chargeI = el('input', 'text-input small-input'); chargeI.type = 'text'; chargeI.inputMode = 'decimal'; chargeI.placeholder = 'Charge kg (optionnel)';
     var addB = el('button', 'btn small', '+ Ajouter à la séance');
     var pendingLibId = null;
     var pendingExerciseId = null;
@@ -3465,11 +3510,16 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
     }
     addB.onclick = function () {
       var nm = (nameI.value || '').trim(); if (!nm) { nameI.focus(); return; }
+      // Un nom d'activité cardio (tapis/marche/course/vélo…) saisi à la main -> vrai bloc Tapis, jamais une carte muscu.
+      if (V16_UX && !pendingLibId && !pendingExerciseId && /^(tapis|treadmill|marche|course|running|cardio|velo|rameur|elliptique)$/.test(HexisLibrary.normalize(nm))) {
+        draft.entries.push({ kind: 'treadmill', name: 'Tapis', planned: {}, realized: {}, note: '' });
+        nameI.value = ''; if (typeof chargeI !== 'undefined') chargeI.value = ''; clear(sugBox); A.saveDraft(draft); renderApp('seance'); return;
+      }
       var ex;
       if (PROGRAMS_ON && pendingExerciseId) { ex = A.getExercises().filter(function (e) { return e.id === pendingExerciseId; })[0] || null; }
-      if (PROGRAMS_ON && !ex && pendingLibId) { ex = ensureLibraryExercise(pendingLibId); if (chargeI.value && ex && ex.startingLoad == null) { ex.startingLoad = { charge: Number(chargeI.value) }; A.saveExercise(ex); } }
+      if (PROGRAMS_ON && !ex && pendingLibId) { ex = ensureLibraryExercise(pendingLibId); var _c0 = parseNum(chargeI.value, true); if (_c0 != null && ex && ex.startingLoad == null) { ex.startingLoad = { charge: _c0 }; A.saveExercise(ex); } }
       if (!ex) ex = A.createExercise(nm, chargeI.value || null);
-      draft.entries.push({ exerciseId: ex.id, name: ex.name, prescriptionSnapshot: { setsTarget: 3, repsTarget: null, restSeconds: 90 }, sets: [ { charge: chargeI.value ? Number(chargeI.value) : null, reps: null, restSeconds: null }, { charge: chargeI.value ? Number(chargeI.value) : null, reps: null, restSeconds: null }, { charge: chargeI.value ? Number(chargeI.value) : null, reps: null, restSeconds: null } ] });
+      draft.entries.push({ exerciseId: ex.id, name: ex.name, prescriptionSnapshot: { setsTarget: 3, repsTarget: null, restSeconds: 90 }, sets: (function(){ var _c = parseNum(chargeI.value, true); return [ { charge: _c, reps: null, restSeconds: null }, { charge: _c, reps: null, restSeconds: null }, { charge: _c, reps: null, restSeconds: null } ]; })() });
       A.saveDraft(draft); renderApp('seance');
     };
     addWrap.appendChild(chargeI); addWrap.appendChild(addB);
@@ -3502,9 +3552,12 @@ body{max-width:560px;margin:0 auto;min-height:100dvh}
   // champ de saisie compact (charge ou reps)
   function logInput(val, label, onchange) {
     var wrap = el('div', 'log-cell');
-    var inp = el('input', 'log-input'); inp.type = 'number'; inp.inputMode = 'numeric'; inp.placeholder = label;
-    if (val != null) inp.value = val;
-    inp.onchange = function () { var v = inp.value === '' ? null : Number(inp.value); onchange(v); };
+    var isCharge = (label === 'kg');
+    var inp = el('input', 'log-input');
+    inp.type = 'text'; inp.inputMode = isCharge ? 'decimal' : 'numeric'; inp.placeholder = label;
+    if (isCharge) inp.setAttribute('enterkeyhint', 'done');
+    if (val != null) inp.value = (typeof val === 'number' && isCharge) ? String(val).replace('.', ',') : val;
+    inp.onchange = function () { onchange(parseNum(inp.value, isCharge)); };
     wrap.appendChild(inp);
     wrap.appendChild(el('span', 'log-unit', label));
     return wrap;
